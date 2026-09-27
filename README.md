@@ -151,9 +151,9 @@ Every companion note carries a write-time disposition in its frontmatter so clea
 - `record`: remove the task line but keep the todo-native record note (retire it with `todo archive` to move it into `.todo/archive/`).
 - `float` (note exists with no recognized disposition, or the note cannot be read): leave the task line and list it for review. Only a genuinely missing note file counts as "no note", so an unreadable note is never discarded by accident.
 
-`todo clear --all` applies the same rules across every registered repo. The registry is updated by `todo init` and reconciled with `todo doctor`.
+`todo clear --all` applies the same rules across every registered repo. The registry is updated by `todo init` and reconciled with `todo doctor`. A registry entry whose directory cannot be checked (for example a permissions problem) fails the run with an error instead of counting as stale, so `doctor --fix` never drops a reachable entry by accident.
 
-Summaries longer than 120 characters are truncated on the task line (with a trailing `...`) and spilled into a `kind: work-order` note so the full text is preserved. When no note is requested, that note is created automatically. Park records are exempt: their `synopsis` carries the full summary.
+Summaries must fit on a single line: embedded newlines are rejected. The same holds for the `synopsis` and `source` note fields, so `add` and `archive` can never write a malformed frontmatter block. Summaries longer than 120 characters are truncated on the task line (with a trailing `...`) and spilled into a `kind: work-order` note so the full text is preserved. When no note is requested, that note is created automatically. Park records are exempt: their `synopsis` carries the full summary.
 
 `todo detail --json` exposes the derived `disposition` field: `park` (has `category`), `record` (has `kind: record`), `work-order` (has `kind: work-order`), `clear` (no note), or `float` (note exists, none of the markers). `todo detail` itself reports an unreadable note as an error rather than a disposition.
 
@@ -177,7 +177,7 @@ Both `todo list --json` and `todo detail --json` emit stable, machine-readable J
 - `status`: canonical status designation (`open`, `in progress`, `complete`)
 - `status_symbol`: raw checkbox character (` `, `o`, `x`)
 
-`todo list --json` returns an array of tasks with fields: `id`, `status`, `status_symbol`, `priority`, `opened`, `claimed`, `age_days`, `summary`, and `disposition` (`park`, `record`, `work-order`, `clear`, or `float`). When using `todo list --all --json`, each task also includes `repo_path` and `repo_project`.
+`todo list --json` returns an array of tasks with fields: `id`, `status`, `status_symbol`, `priority`, `opened`, `claimed`, `age_days`, `summary`, and `disposition` (`park`, `record`, `work-order`, `clear`, or `float`). A companion note that exists but cannot be read aborts the listing with an error rather than reporting the task as `clear`, matching `todo detail`. When using `todo list --all --json`, each task also includes `repo_path` and `repo_project`.
 
 `todo list --archive --json` returns `{schema_version, archived[]}`, where each archived note has `name`, `path`, and `synopsis` (plus `repo_path`/`repo_project` with `--all`).
 
