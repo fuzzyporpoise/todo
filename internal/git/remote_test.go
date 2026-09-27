@@ -17,6 +17,9 @@ func TestParseRemote(t *testing.T) {
 		{"scp-like", "github.com:owner/repo.git", "github.com", "owner"},
 		{"empty", "", "", ""},
 		{"local path", "/code/repo", "", ""},
+		{"local path with colon", "/code/re:po", "", ""},
+		{"windows drive path", `C:\code\repo`, "", ""},
+		{"windows drive slash path", "C:/code/repo", "", ""},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
