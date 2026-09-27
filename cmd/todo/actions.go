@@ -779,7 +779,10 @@ func runDoctor(cmd *cli.Command, opts doctorOptions) error {
 		return exitError(err)
 	}
 
-	kept, stale := registry.DropMissing(entries)
+	kept, stale, err := registry.DropMissing(entries)
+	if err != nil {
+		return exitError(err)
+	}
 
 	roots := opts.roots
 	if len(roots) == 0 {
@@ -908,6 +911,10 @@ func writeJSON(out io.Writer, tasks []listedTask) error {
 	outTasks := make([]jsonTask, 0, len(tasks))
 	for _, lt := range tasks {
 		t := lt.Task
+		disp, err := dispositionFor(lt)
+		if err != nil {
+			return err
+		}
 		jt := jsonTask{
 			ID:           t.ID,
 			Status:       t.Status.StatusName(),
@@ -918,7 +925,7 @@ func writeJSON(out io.Writer, tasks []listedTask) error {
 			Summary:      t.Summary,
 			RepoPath:     lt.repoPath,
 			RepoProject:  lt.repoProject,
-			Disposition:  string(dispositionFor(lt)),
+			Disposition:  string(disp),
 		}
 		if age := t.AgeDays(); age >= 0 {
 			jt.AgeDays = &age
@@ -934,18 +941,23 @@ func writeJSON(out io.Writer, tasks []listedTask) error {
 }
 
 // dispositionFor returns the companion-note disposition for a listed task.
-func dispositionFor(lt listedTask) todo.Disposition {
+// A missing note returns DispositionClear; any other read error is returned
+// so the caller can surface it instead of silently reporting "clear".
+func dispositionFor(lt listedTask) (todo.Disposition, error) {
 	var notePath string
 	if lt.repoPath != "" {
 		notePath = filepath.Join(lt.repoPath, ".todo", "notes", lt.ID+".md")
 	} else if lt.notesDir != "" {
 		notePath = filepath.Join(lt.notesDir, lt.ID+".md")
 	} else {
-		return todo.DispositionClear
+		return todo.DispositionClear, nil
 	}
 	disp, err := todo.NoteDisposition(notePath)
 	if err != nil {
-		return todo.DispositionClear
+		if errors.Is(err, os.ErrNotExist) {
+			return todo.DispositionClear, nil
+		}
+		return todo.DispositionClear, fmt.Errorf("read note disposition for %s: %w", notePath, err)
 	}
-	return disp
+	return disp, nil
 }

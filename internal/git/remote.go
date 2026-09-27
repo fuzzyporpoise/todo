@@ -2,6 +2,7 @@ package git
 
 import (
 	"net/url"
+	"path"
 	"path/filepath"
 	"strings"
 )
@@ -33,11 +34,25 @@ func ParseRemote(raw string) (host, owner string) {
 	}
 
 	// SCP-like form without scheme: github.com:owner/repo.git
-	if hostPath, path, ok := strings.Cut(raw, ":"); ok && !filepath.IsAbs(raw) {
-		return hostPath, ownerFromPath(path)
+	if hostPath, repoPath, ok := strings.Cut(raw, ":"); ok && !isLocalPath(raw) {
+		return hostPath, ownerFromPath(repoPath)
 	}
 
 	return "", ""
+}
+
+// isLocalPath reports whether raw is a local filesystem path rather than a
+// remote URL. Windows drive-letter paths are matched explicitly so the check
+// does not depend on the OS the binary runs on.
+func isLocalPath(raw string) bool {
+	if path.IsAbs(raw) || filepath.IsAbs(raw) {
+		return true
+	}
+	if len(raw) >= 2 && raw[1] == ':' {
+		c := raw[0]
+		return c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z'
+	}
+	return false
 }
 
 func ownerFromPath(p string) string {

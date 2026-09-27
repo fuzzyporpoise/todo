@@ -116,6 +116,13 @@ func buildNoteContent(body, kind, category, synopsis, source, fallbackSynopsis, 
 		source = defaultRecordSource
 	}
 
+	if err := validateFrontmatterScalar("synopsis", synopsis); err != nil {
+		return "", err
+	}
+	if err := validateFrontmatterScalar("source", source); err != nil {
+		return "", err
+	}
+
 	if category != "" {
 		if !isParkCategory(category) {
 			return "", fmt.Errorf("invalid category %q: want one of %s", category, strings.Join(parkCategories, ", "))
@@ -124,6 +131,15 @@ func buildNoteContent(body, kind, category, synopsis, source, fallbackSynopsis, 
 	}
 
 	return renderRecord(created, source, synopsis, body), nil
+}
+
+// validateFrontmatterScalar rejects values that would break the simple
+// single-line YAML frontmatter format used by todo and park records.
+func validateFrontmatterScalar(name, value string) error {
+	if strings.ContainsAny(value, "\n\r") {
+		return fmt.Errorf("frontmatter field %q must be a single line", name)
+	}
+	return nil
 }
 
 // renderParkRecord emits park's four-key frontmatter block for interop. It

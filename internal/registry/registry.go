@@ -24,13 +24,16 @@ type Entry struct {
 
 // DefaultPath returns the default registry file path:
 // $XDG_CACHE_HOME/todo/registry.json, or ~/.cache/todo/registry.json.
+// If the home directory cannot be determined, it falls back to the OS
+// temporary directory so the registry is never written to an arbitrary
+// working directory.
 func DefaultPath() string {
 	if cacheHome := os.Getenv("XDG_CACHE_HOME"); cacheHome != "" {
 		return filepath.Join(cacheHome, "todo", "registry.json")
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return "todo-registry.json"
+		return filepath.Join(os.TempDir(), "todo-registry.json")
 	}
 	return filepath.Join(home, ".cache", "todo", "registry.json")
 }
@@ -96,16 +99,20 @@ func Upsert(entries []Entry, path, repo, project string) []Entry {
 }
 
 // DropMissing returns the kept entries and the stale entries whose directories
-// no longer exist.
-func DropMissing(entries []Entry) (kept, stale []Entry) {
+// no longer exist. A stat error other than "not exist" is returned so the
+// caller can distinguish a missing repo from a permission problem.
+func DropMissing(entries []Entry) (kept, stale []Entry, err error) {
 	for _, e := range entries {
-		if _, err := os.Stat(e.Path); err != nil {
-			stale = append(stale, e)
-			continue
+		if _, statErr := os.Stat(e.Path); statErr != nil {
+			if errors.Is(statErr, os.ErrNotExist) {
+				stale = append(stale, e)
+				continue
+			}
+			return nil, nil, fmt.Errorf("stat %s: %w", e.Path, statErr)
 		}
 		kept = append(kept, e)
 	}
-	return kept, stale
+	return kept, stale, nil
 }
 
 // FindUnregistered walks roots up to maxDepth and returns the absolute,

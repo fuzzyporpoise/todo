@@ -185,6 +185,82 @@ type CompleteOptions struct {
 	Clear    bool
 }
 
+// Clear removes completed tasks according to their note disposition:
+//   - no note: delete the task line (nothing to preserve or delete).
+//   - work-order: delete the task line and its disposable note.
+//   - park: delete the task line but preserve the park record note.
+//   - record: delete the task line but preserve the todo-native record note.
+//   - float (a note exists but has no recognized disposition, or cannot be
+//     read at all): leave the task line for manual review.
+//
+// The todo file is rewritten before any work-order notes are deleted so a
+// write failure cannot leave task lines pointing to missing notes.
+func Clear(todoPath, notesDir string) (ClearResult, error) {
+	tasks, h, err := parseTodoFile(todoPath)
+	if err != nil {
+		return ClearResult{}, fmt.Errorf("read todo file: %w", err)
+	}
+
+	var remaining []Task
+	var result ClearResult
+	var notesToDelete []string
+	wrote := false
+
+	for _, t := range tasks {
+		if t.Status != StatusDone {
+			remaining = append(remaining, t)
+			continue
+		}
+
+		notePath := filepath.Join(notesDir, t.ID+".md")
+		disp, err := NoteDisposition(notePath)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				// No companion note exists: nothing to preserve or delete.
+				result.RemovedClear = append(result.RemovedClear, t.ID)
+				wrote = true
+				continue
+			}
+			// The note exists but cannot be read (permissions, I/O). Keep the
+			// line so an unreadable note is never discarded by accident.
+			remaining = append(remaining, t)
+			result.Float = append(result.Float, t.ID)
+			continue
+		}
+
+		switch disp {
+		case DispositionWorkOrder:
+			notesToDelete = append(notesToDelete, notePath)
+			result.RemovedWorkOrder = append(result.RemovedWorkOrder, t.ID)
+			wrote = true
+		case DispositionPark:
+			result.Parked = append(result.Parked, t.ID)
+			wrote = true
+		case DispositionRecord:
+			result.Recorded = append(result.Recorded, t.ID)
+			wrote = true
+		default:
+			remaining = append(remaining, t)
+			result.Float = append(result.Float, t.ID)
+		}
+	}
+
+	if wrote {
+		h.lastUpdated = now().Format("2006-01-02T15:04")
+		if err := writeTodoFile(todoPath, h, remaining); err != nil {
+			return ClearResult{}, fmt.Errorf("write todo file: %w", err)
+		}
+	}
+
+	for _, notePath := range notesToDelete {
+		if err := fs.RemoveFollowingSymlink(notePath); err != nil {
+			return ClearResult{}, fmt.Errorf("delete note %s: %w", notePath, err)
+		}
+	}
+
+	return result, nil
+}
+
 // AddOptions configures Add.
 type AddOptions struct {
 	TodoPath    string
@@ -236,6 +312,10 @@ func Add(opts AddOptions) (AddResult, error) {
 	priority, err := parsePriority(opts.Priority)
 	if err != nil {
 		return AddResult{}, err
+	}
+
+	if strings.ContainsAny(opts.Summary, "\n\r") {
+		return AddResult{}, errors.New("task summary must be a single line")
 	}
 
 	tasks, header, err := parseTodoFile(opts.TodoPath)
@@ -568,6 +648,12 @@ func Archive(opts ArchiveOptions) (ArchiveResult, error) {
 	if source == "" {
 		source = defaultRecordSource
 	}
+	if err := validateFrontmatterScalar("synopsis", synopsis); err != nil {
+		return ArchiveResult{}, err
+	}
+	if err := validateFrontmatterScalar("source", source); err != nil {
+		return ArchiveResult{}, err
+	}
 
 	name := opts.Name
 	if name == "" {
@@ -595,6 +681,9 @@ func Archive(opts ArchiveOptions) (ArchiveResult, error) {
 	h.lastUpdated = now().Format("2006-01-02T15:04")
 	remaining := append(tasks[:idx], tasks[idx+1:]...)
 	if err := writeTodoFile(opts.TodoPath, h, remaining); err != nil {
+		// Best-effort rollback: don't leave an archive file when the task
+		// line could not be removed.
+		_ = os.Remove(archivePath)
 		return ArchiveResult{}, fmt.Errorf("write todo file: %w", err)
 	}
 
@@ -657,74 +746,6 @@ type ClearResult struct {
 	Parked           []string // IDs removed but whose park notes were kept
 	Recorded         []string // IDs removed but whose todo-native record notes were kept
 	Float            []string // completed IDs left in the file for review
-}
-
-// Clear removes completed tasks according to their note disposition:
-//   - no note: delete the task line (nothing to preserve or delete).
-//   - work-order: delete the task line and its disposable note.
-//   - park: delete the task line but preserve the park record note.
-//   - record: delete the task line but preserve the todo-native record note.
-//   - float (a note exists but has no recognized disposition, or cannot be
-//     read at all): leave the task line for manual review.
-func Clear(todoPath, notesDir string) (ClearResult, error) {
-	tasks, h, err := parseTodoFile(todoPath)
-	if err != nil {
-		return ClearResult{}, fmt.Errorf("read todo file: %w", err)
-	}
-
-	var remaining []Task
-	var result ClearResult
-	wrote := false
-
-	for _, t := range tasks {
-		if t.Status != StatusDone {
-			remaining = append(remaining, t)
-			continue
-		}
-
-		notePath := filepath.Join(notesDir, t.ID+".md")
-		disp, err := NoteDisposition(notePath)
-		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				// No companion note exists: nothing to preserve or delete.
-				result.RemovedClear = append(result.RemovedClear, t.ID)
-				wrote = true
-				continue
-			}
-			// The note exists but cannot be read (permissions, I/O). Keep the
-			// line so an unreadable note is never discarded by accident.
-			remaining = append(remaining, t)
-			result.Float = append(result.Float, t.ID)
-			continue
-		}
-
-		switch disp {
-		case DispositionWorkOrder:
-			if err := fs.RemoveFollowingSymlink(notePath); err != nil {
-				return ClearResult{}, fmt.Errorf("delete note %s: %w", notePath, err)
-			}
-			result.RemovedWorkOrder = append(result.RemovedWorkOrder, t.ID)
-			wrote = true
-		case DispositionPark:
-			result.Parked = append(result.Parked, t.ID)
-			wrote = true
-		case DispositionRecord:
-			result.Recorded = append(result.Recorded, t.ID)
-			wrote = true
-		default:
-			remaining = append(remaining, t)
-			result.Float = append(result.Float, t.ID)
-		}
-	}
-
-	if wrote {
-		h.lastUpdated = now().Format("2006-01-02T15:04")
-		if err := writeTodoFile(todoPath, h, remaining); err != nil {
-			return ClearResult{}, fmt.Errorf("write todo file: %w", err)
-		}
-	}
-
-	return result, nil
 }
 
 // BumpResult describes the outcome of Bump. NoOp is true when the task was

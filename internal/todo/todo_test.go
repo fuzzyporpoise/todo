@@ -1804,6 +1804,42 @@ func TestAddNoteInvalidCategory(t *testing.T) {
 	}
 }
 
+func TestAddRejectsMultilineSummary(t *testing.T) {
+	todoPath, notesDir := writeTestTodo(t, nil)
+
+	_, err := Add(AddOptions{
+		TodoPath: todoPath,
+		NotesDir: notesDir,
+		Priority: "med",
+		Summary:  "line one\nline two",
+	})
+	if err == nil {
+		t.Fatal("Add with multiline summary: expected error")
+	}
+	if len(readTasks(t, todoPath)) != 0 {
+		t.Error("invalid add wrote a task")
+	}
+}
+
+func TestBuildNoteContentRejectsMultilineFrontmatter(t *testing.T) {
+	cases := []struct {
+		name     string
+		synopsis string
+		source   string
+	}{
+		{"multiline synopsis", "a\nb", "repo"},
+		{"multiline source", "syn", "a\nb"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := buildNoteContent("body", "", "", tc.synopsis, tc.source, "fallback", "2026-09-26")
+			if err == nil {
+				t.Fatal("expected error for multiline frontmatter value")
+			}
+		})
+	}
+}
+
 func TestNoteDisposition(t *testing.T) {
 	dir := t.TempDir()
 	notesDir := filepath.Join(dir, ".todo", "notes")
@@ -2121,6 +2157,35 @@ func TestArchiveGuards(t *testing.T) {
 		}
 		if res.Synopsis != "why it matters" {
 			t.Errorf("synopsis = %q, want why it matters", res.Synopsis)
+		}
+	})
+
+	t.Run("multiline synopsis", func(t *testing.T) {
+		todoPath, notesDir := writeTestTodo(t, []Task{
+			{ID: "TSK-001", Priority: "med", Opened: "2026-08-01", Status: StatusDone, Summary: "done"},
+		})
+		if err := os.MkdirAll(notesDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(notesDir, "TSK-001.md"), []byte("plain body"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		archiveDir := archiveDirOf(notesDir)
+		_, err := Archive(ArchiveOptions{
+			TodoPath:   todoPath,
+			NotesDir:   notesDir,
+			ArchiveDir: archiveDir,
+			Ref:        "1",
+			Synopsis:   "line one\nline two",
+		})
+		if err == nil {
+			t.Fatal("archive with multiline synopsis: expected error")
+		}
+		if len(readTasks(t, todoPath)) != 1 {
+			t.Error("failed archive removed the task line")
+		}
+		if _, err := os.Stat(filepath.Join(archiveDir, "TSK-001.md")); !os.IsNotExist(err) {
+			t.Errorf("failed archive left an archive file: %v", err)
 		}
 	})
 }

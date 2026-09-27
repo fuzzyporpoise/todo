@@ -72,7 +72,10 @@ func TestDropMissing(t *testing.T) {
 		{Path: present},
 		{Path: filepath.Join(dir, "missing")},
 	}
-	kept, stale := DropMissing(entries)
+	kept, stale, err := DropMissing(entries)
+	if err != nil {
+		t.Fatalf("DropMissing: %v", err)
+	}
 	if len(kept) != 1 || len(stale) != 1 {
 		t.Fatalf("kept=%d stale=%d, want 1/1", len(kept), len(stale))
 	}
