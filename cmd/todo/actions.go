@@ -12,10 +12,10 @@ import (
 
 	"github.com/urfave/cli/v3"
 
-	"github.com/polymorcodeus/todo/internal/fs"
-	"github.com/polymorcodeus/todo/internal/git"
-	"github.com/polymorcodeus/todo/internal/registry"
-	"github.com/polymorcodeus/todo/internal/todo"
+	"go.fuzzyporpoise.dev/todo/internal/fs"
+	"go.fuzzyporpoise.dev/todo/internal/git"
+	"go.fuzzyporpoise.dev/todo/internal/registry"
+	"go.fuzzyporpoise.dev/todo/internal/todo"
 )
 
 // appConfig carries the resolved per-run dependencies for all commands.

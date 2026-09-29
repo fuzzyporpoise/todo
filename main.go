@@ -5,7 +5,7 @@ import (
 	_ "embed"
 	"strings"
 
-	cmd "github.com/polymorcodeus/todo/cmd/todo"
+	cmd "go.fuzzyporpoise.dev/todo/cmd/todo"
 )
 
 //go:embed VERSION
