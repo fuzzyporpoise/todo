@@ -1,4 +1,4 @@
-module github.com/polymorcodeus/todo
+module go.fuzzyporpoise.dev/todo
 
 go 1.26.4
 

@@ -15,8 +15,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/polymorcodeus/todo/internal/fs"
-	"github.com/polymorcodeus/todo/internal/git"
+	"go.fuzzyporpoise.dev/todo/internal/fs"
+	"go.fuzzyporpoise.dev/todo/internal/git"
 )
 
 // now is the clock; tests override it via setNow to make behavior deterministic.

@@ -27,7 +27,7 @@ The `go install` and source builds require Go 1.26.4+.
 Or install via Go:
 
 ```sh
-go install github.com/polymorcodeus/todo@latest
+go install go.fuzzyporpoise.dev/todo@latest
 ```
 
 Or build from source:
