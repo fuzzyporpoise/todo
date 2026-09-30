@@ -6,11 +6,11 @@
 
 # todo
 
-[![Go Version](https://img.shields.io/github/go-mod/go-version/polymorcodeus/todo)](https://go.dev/) [![Build Status](https://img.shields.io/github/actions/workflow/status/polymorcodeus/todo/ci.yml?branch=main)](https://github.com/polymorcodeus/todo/actions) [![License](https://img.shields.io/github/license/polymorcodeus/todo)](./LICENSE)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/fuzzyporpoise/todo)](https://go.dev/) [![Build Status](https://img.shields.io/github/actions/workflow/status/fuzzyporpoise/todo/ci.yml?branch=main)](https://github.com/fuzzyporpoise/todo/actions) [![License](https://img.shields.io/github/license/fuzzyporpoise/todo)](./LICENSE)
 
 **An ad-hoc task list that lives in a plain Markdown file, `.todo/todo.md`, inside your git repo.**
 
-Part of the [polymorcodeus](https://github.com/polymorcodeus) suite of CLI tooling for dotfile and knowledge management.
+Part of the [fuzzyporpoise](https://github.com/fuzzyporpoise) suite of CLI tooling for dotfile and knowledge management.
 
 Manage an ad-hoc task list in a plain Markdown file, `.todo/todo.md`, stored in the root of a git repo. Designed for agents and scripts: everything is a version-controllable text file, with optional companion notes. Every read command has a `--json` mode, task IDs are never recycled, companion notes at `.todo/notes/<ID>.md` carry the full brief for a task, and retired whys live in the repo-local `.todo/archive/`.
 
@@ -19,7 +19,7 @@ Manage an ad-hoc task list in a plain Markdown file, `.todo/todo.md`, stored in 
 Quick install (downloads the latest release to `/usr/local/bin`):
 
 ```sh
-curl -sSL https://raw.githubusercontent.com/polymorcodeus/todo/main/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/fuzzyporpoise/todo/main/install.sh | bash
 ```
 
 The `go install` and source builds require Go 1.26.4+.
@@ -33,7 +33,7 @@ go install go.fuzzyporpoise.dev/todo@latest
 Or build from source:
 
 ```sh
-git clone https://github.com/polymorcodeus/todo.git
+git clone https://github.com/fuzzyporpoise/todo.git
 cd todo
 make build
 ```

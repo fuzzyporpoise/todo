@@ -75,7 +75,7 @@ changelog:
 
 release:
   github:
-    owner: polymorcodeus
+    owner: fuzzyporpoise
     name: todo
   draft: false
   prerelease: auto
@@ -89,7 +89,7 @@ release:
 
     ```bash
     # Quick install
-    curl -sSL https://raw.githubusercontent.com/polymorcodeus/todo/main/install.sh | bash
+    curl -sSL https://raw.githubusercontent.com/fuzzyporpoise/todo/main/install.sh | bash
 
     # Homebrew
     # not yet supported
@@ -102,4 +102,4 @@ release:
 
   footer: |
     ---
-    **Full Changelog**: https://github.com/polymorcodeus/todo/compare/{{.PreviousTag}}...{{.Tag}}
+    **Full Changelog**: https://github.com/fuzzyporpoise/todo/compare/{{.PreviousTag}}...{{.Tag}}

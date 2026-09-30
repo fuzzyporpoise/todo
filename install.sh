@@ -13,7 +13,7 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # GitHub repository
-REPO="polymorcodeus/todo"
+REPO="fuzzyporpoise/todo"
 INSTALL_DIR="/usr/local/bin"
 BINARY_NAME="todo"
 
@@ -163,9 +163,9 @@ if [ "$1" = "--help" ] || [ "$1" = "-h" ]; then
     echo "todo installer script"
     echo ""
     echo "Usage:"
-    echo "  curl -sSL https://raw.githubusercontent.com/polymorcodeus/todo/main/install.sh | bash"
-    echo "  curl -sSL https://raw.githubusercontent.com/polymorcodeus/todo/main/install.sh | bash -s v1.0.3"
-    echo "  TODO_VERSION=v1.0.3 curl -sSL https://raw.githubusercontent.com/polymorcodeus/todo/main/install.sh | bash"
+    echo "  curl -sSL https://raw.githubusercontent.com/fuzzyporpoise/todo/main/install.sh | bash"
+    echo "  curl -sSL https://raw.githubusercontent.com/fuzzyporpoise/todo/main/install.sh | bash -s v1.0.3"
+    echo "  TODO_VERSION=v1.0.3 curl -sSL https://raw.githubusercontent.com/fuzzyporpoise/todo/main/install.sh | bash"
     echo ""
     echo "This script will:"
     echo "  1. Detect your OS and architecture"
@@ -175,7 +175,7 @@ if [ "$1" = "--help" ] || [ "$1" = "-h" ]; then
     echo "Environment variables:"
     echo "  TODO_VERSION - Specify version to install (e.g., v1.0.3)"
     echo ""
-    echo "Manual installation: https://github.com/polymorcodeus/todo/releases"
+    echo "Manual installation: https://github.com/fuzzyporpoise/todo/releases"
     exit 0
 fi
 

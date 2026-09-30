@@ -11,9 +11,9 @@ func TestParseRemote(t *testing.T) {
 		wantHost  string
 		wantOwner string
 	}{
-		{"ssh short", "git@github.com:polymorcodeus/park.git", "github.com", "polymorcodeus"},
-		{"https", "https://github.com/polymorcodeus/park.git", "github.com", "polymorcodeus"},
-		{"https no suffix", "https://github.com/polymorcodeus/todo", "github.com", "polymorcodeus"},
+		{"ssh short", "git@github.com:fuzzyporpoise/park.git", "github.com", "fuzzyporpoise"},
+		{"https", "https://github.com/fuzzyporpoise/park.git", "github.com", "fuzzyporpoise"},
+		{"https no suffix", "https://github.com/fuzzyporpoise/todo", "github.com", "fuzzyporpoise"},
 		{"scp-like", "github.com:owner/repo.git", "github.com", "owner"},
 		{"empty", "", "", ""},
 		{"local path", "/code/repo", "", ""},

@@ -8,7 +8,7 @@
 ## Getting started
 
 ```bash
-git clone https://github.com/polymorcodeus/todo.git
+git clone https://github.com/fuzzyporpoise/todo.git
 cd todo
 make build
 ```
@@ -28,7 +28,7 @@ make check    # fmt, vet, lint, test
 | Package | Does | Imports |
 |---------|------|---------|
 | `cmd/todo` | CLI command tree (`add`, `init`, `list`, `pickup`, `release`, `remove`, `detail`, `complete`, `reopen`, `bump`, `clear`, `doctor`), flag parsing, all terminal I/O | everything below |
-| `internal/todo` | domain logic: task model, Markdown parse/serialize, ID allocation, filtering, note disposition | `internal/fs`, `internal/git`, `park/schema` |
+| `internal/todo` | domain logic: task model, Markdown parse/serialize, ID allocation, filtering, note disposition | `internal/fs`, `internal/git` |
 | `internal/registry` | machine-local cache of tracked repo folders (`$XDG_CACHE_HOME/todo/registry.json`, falling back to `~/.cache/todo/registry.json`) | stdlib only |
 | `internal/git` | git CLI helpers: repo root, remote URL, remote parsing | stdlib only |
 | `internal/fs` | filesystem helpers (exists check) | stdlib only |
@@ -73,7 +73,7 @@ Control flow: per-repo commands resolve the repo root through `requireRepoConfig
 
 ## Implementation notes
 
-- The only external dependencies are `urfave/cli/v3` (plus `urfave/cli-validation`) and the public `github.com/polymorcodeus/park/schema` package, which supplies the record frontmatter contract and render helpers. Keep `internal/*` free of new dependencies where stdlib will do.
+- The only external dependencies are `urfave/cli/v3` (plus `urfave/cli-validation`). todo does not import `park/schema`: it defines its own durable note contract and duplicates the park category enum locally (`ParkCategories()` in `internal/todo/note.go`), emitting a park-shaped record only for interop. Keep `internal/*` free of new dependencies where stdlib will do.
 - The registry path defaults to `$XDG_CACHE_HOME/todo/registry.json` (or `~/.cache/todo/registry.json`) and is overridable via `TODO_REGISTRY`.
 - Version is dual-sourced: the embedded `VERSION` file serves local and `go install` builds, while `main.version`/`main.buildTime` ldflags (set by GoReleaser, and by the Makefile for `make build`) win when present.
 - `AGENTS.md` is a private, symlinked file and is not part of this repository. Contributor-facing context belongs in this file and in `README.md`.
