@@ -363,14 +363,26 @@ func Add(opts AddOptions) (AddResult, error) {
 			if err != nil {
 				return AddResult{}, fmt.Errorf("read note file: %w", err)
 			}
-			content = string(data)
+			// The source is a free-standing doc: its frontmatter describes the
+			// doc, so only the body crosses over into the note.
+			content = stripFrontmatter(string(data))
 		}
 
+		spill := ""
 		if spilled && opts.Kind == "work-order" {
-			content = spillBody(fullSummary, content)
+			spill = fullSummary
 		}
 
-		content, err = buildNoteContent(content, opts.Kind, opts.Category, opts.Synopsis, opts.Source, fullSummary, task.Opened)
+		content, err = buildNoteContent(noteBuild{
+			Body:             content,
+			Kind:             opts.Kind,
+			Category:         opts.Category,
+			Synopsis:         opts.Synopsis,
+			Source:           opts.Source,
+			FallbackSynopsis: fullSummary,
+			Created:          task.Opened,
+			SpillSummary:     spill,
+		})
 		if err != nil {
 			return AddResult{}, err
 		}

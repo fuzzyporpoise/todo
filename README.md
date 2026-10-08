@@ -51,7 +51,7 @@ todo add -p high "urgent issue"             # add with priority (low|med|high)
 todo add -s "summaries also via flag"       # summary via flag
 todo add --note-content "body" "task"       # create a note with content (no -n needed)
 echo "body" | todo add -n "task"            # ...or read note content from stdin
-todo add --note-file ./draft.md "task"      # ...or copy an existing file (not move; no -n needed)
+todo add --note-file ./draft.md "task"      # ...or copy a file's body (its frontmatter is dropped; not moved; no -n needed)
 todo add --dry-run -s "x" --note-content "y" # preview the would-be line + note, no write
 todo add -n --kind work-order "task"        # note is a disposable work order
 todo add -n --synopsis "one line" "task"    # note is a todo-native record (default when -n is given)
@@ -70,8 +70,10 @@ todo list --all                             # list tasks across all registered r
 todo list --all --json                      # ...with repo_path/repo_project and disposition
 todo list --all --sort priority             # sort global results
 todo doctor                                 # report stale/unregistered registry entries
+todo doctor --adoption                      # also flag repos whose .todo tree is a real file, not a store symlink
 todo doctor --all                           # scan every registered repo directory downward
 todo doctor --fix                           # drop stale entries and register missing repos
+todo doctor --json                          # machine-readable findings
 todo doctor --depth 3 /code                 # scan /code downward up to depth 3 for unregistered .todo folders
 todo detail TSK-001                         # show task details + 20-line note preview
 todo detail --lines 5 TSK-001               # preview first 5 lines of the note
@@ -79,8 +81,15 @@ todo detail --no-note TSK-001               # show task details without note pre
 todo detail --full TSK-001                  # show the complete note body
 todo detail --json TSK-001                  # machine-readable detail output
 todo detail --json --full TSK-001           # ...with the complete note body in note_body
-todo pickup TSK-001                         # mark a task in progress (adds claimed date)
-todo release TSK-001                        # release a picked-up task back to open (drop claim)
+todo pickup TSK-001                         # mark a task in progress (adds claimed date); prints the line only
+todo handoff TSK-001 --note-content "state" # write a replaceable ## Handoff section onto an in-progress note
+todo handoff TSK-001 --note-file ./state.md # ...or copy a file's body (its frontmatter is dropped)
+todo handoff TSK-001 --json                # machine-readable handoff write
+todo resume                                # list every in-progress task whose note carries a handoff
+todo resume TSK-001                        # print one task's handoff, verify commands included
+todo resume --all                          # ...across all registered repos
+todo resume TSK-001 --json                 # machine-readable handoff output
+todo release TSK-001                       # release a picked-up task back to open (drop claim)
 todo complete TSK-001                       # mark a task done (drops claimed)
 todo complete --clear TSK-001               # remove the task line entirely
 todo complete --park TSK-001                # done + print the companion note path
@@ -100,7 +109,9 @@ Task references accept `TSK-001`, `tsk-001`, `001`, `1`, or `#1`.
 
 State rules:
 
-- `pickup` only works on an open `[ ]` task.
+- `pickup` only works on an open `[ ]` task, and prints the claimed line alone: the companion note comes from `todo detail`, so the claim verb never hands back a bare path that invites browsing its directory.
+- `handoff` only works on an in-progress `[o]` task (you can only hand off work you hold). It writes the task's handoff section and never touches the todo file, so it does not move `last_updated`.
+- `resume` accepts `[o]` by design: with a ref it reads that task's handoff whatever its status, and bare it lists every in-progress task carrying one, newest first.
 - `complete` only works on an in-progress `[o]` task (i.e. one you picked up).
 - `release` also only works on an in-progress `[o]` task; it returns it to `[ ]` and drops the claim.
 - `remove` works on any status line (including `[x]` done lines) and deletes it; `--note` also deletes the companion note file. When that note is a symlink, the target it points at is deleted first and the link after, so lnk-managed notes leave neither an orphaned target nor a dangling link.
@@ -135,6 +146,14 @@ Status is `[ ]` open, `[o]` in progress, `[x]` done. `claimed:` records when a t
 
 Every `todo init` registers the repo in a machine-local JSON cache at `$XDG_CACHE_HOME/todo/registry.json` (falling back to `~/.cache/todo/registry.json`). The registry stores the absolute repo path, project name, git remote URL, parsed host/owner, and a `last_seen` timestamp. `todo list --all` and `todo doctor` use this cache to operate across tracked folders without `cd`ing.
 
+### Adoption
+
+Where an out-of-band store is the versioned home, a repo's `.todo/` is **adopted** when `.todo/todo.md` is a symlink into that store. An unadopted repo is then a silent hazard: a real `todo.md` lives only in the working copy, outside every backup, while the board renders its tasks anyway.
+
+That is a host-side convention, not a todo requirement. A plain repo with a real `.todo/todo.md` is a perfectly good todo repo, and every `todo init` starts out that way, so the check is opt-in: `todo doctor --adoption` reports each unadopted repo and names the corrective step, the host-side `lnk project init`. Without the flag, doctor reports the registry and says nothing about stores.
+
+`--adoption --all` covers every registered repo; with neither `--all` nor positional paths the scan root is the repo the command runs in (from its root, so a subdirectory invocation still flags its own tree), and scan roots are canonicalized so a repo reached through a symlinked path is not mistaken for an unregistered twin. `--fix` reconciles the registry only: adoption is host-side, so doctor never fakes it.
+
 ## Note disposition
 
 Every companion note carries a write-time disposition in its frontmatter so clear-time tooling knows whether to preserve, delete, or float it. Todo defines its own note contract and does not import park's schema; a park-shaped record is emitted only for interop.
@@ -142,6 +161,16 @@ Every companion note carries a write-time disposition in its frontmatter so clea
 - **record** (default): todo-native frontmatter with `kind: record`, `created`, `source`, and `synopsis`. Stamped whenever `-n` creates a note without a `--kind` or `--category` flag; `synopsis` defaults to the task summary and `source` to `repo`.
 - **work order**: `kind: work-order`, stamped by `--kind work-order`. Disposable.
 - **park**: park-native frontmatter with `category`, `created`, `source`, and `synopsis`, stamped by `--category` (interop with the park store). Recognized by the mere presence of `category:`.
+
+### Note creation owns the block
+
+`add` writes exactly one frontmatter block, whatever the body it was handed looks like:
+
+- A body from `--note-content` or stdin that already opens with a block has that block stripped and reconciled: its `synopsis`/`source` fill whichever fields the flags leave silent, and its disposition is adopted when no flag names one (so a body carrying `category: areas` becomes a park record).
+- A body declaring a disposition that the flags contradict is an error, never a second stacked block. `--note-content '---\nkind: record\n---' --kind work-order` refuses instead of writing both.
+- `--note-file` copies a free-standing doc, so the doc's frontmatter (title, status, and friends) describes the doc and is dropped; only the body crosses into the note.
+- Stacked blocks in one body collapse into a single block, which is how the older doubled notes (todo's `kind: record` stapled over an agent-authored `category:` block) heal when their text is fed back in.
+- `created` is always the write date, and a body that merely opens with a horizontal rule is treated as prose, never as frontmatter, so no supplied text is ever eaten.
 
 `todo clear` bulk-removes completed `[x]` tasks based on that disposition:
 
@@ -156,6 +185,43 @@ Every companion note carries a write-time disposition in its frontmatter so clea
 Summaries must fit on a single line: embedded newlines are rejected. The same holds for the `synopsis` and `source` note fields, so `add` and `archive` can never write a malformed frontmatter block. Summaries longer than 120 characters are truncated on the task line (with a trailing `...`) and spilled into a `kind: work-order` note so the full text is preserved. When no note is requested, that note is created automatically. Park records are exempt: their `synopsis` carries the full summary.
 
 `todo detail --json` exposes the derived `disposition` field: `park` (has `category`), `record` (has `kind: record`), `work-order` (has `kind: work-order`), `clear` (no note), or `float` (note exists, none of the markers). `todo detail` itself reports an unreadable note as an error rather than a disposition.
+
+## Handoff
+
+A task's lifecycle has a beginning (`pickup`) and an end (`complete`), and nothing for the middle. A session that pauses mid-task had no word for it, so the pause was hand-written - a free-standing `.todo/` doc, or a section appended to the note, one per pass.
+
+`todo handoff <ref>` gives that pause a canonical shape. It writes a **replaceable** section onto the task's companion note:
+
+```
+## Handoff (2026-08-10)
+
+## State
+
+parser half done; the serializer still writes the old header
+
+### Verify
+
+make test
+
+<!-- /handoff -->
+```
+
+- The section always sits directly below the note's frontmatter, so a resuming reader meets it first.
+- A second handoff **replaces** the first. The note keeps exactly one handoff however many times its work is passed on, and its other sections survive untouched.
+- The closing `<!-- /handoff -->` marker ends the section, because the body carries headings of its own (`## State`, `### Verify`). It renders as nothing. A section hand-written without the marker still reads back, and the next `handoff` rewrites it canonically.
+- `### Verify` is the convention for the commands that prove the work. `resume --json` reports them on their own in `verify`, so a caller can run them without parsing the prose.
+- A task with no companion note gets one, stamped as a todo-native record by the same path `add` uses, so a handoff never introduces a second writer of frontmatter.
+
+`todo resume [<ref>]` is the read side. With a ref it prints that task's handoff, verify commands included; bare it lists every in-progress task whose note carries one, newest first - the re-entry point `pickup` refuses, since pickup rejects a task that is already claimed.
+
+```sh
+todo resume TSK-004            # one task's handoff
+todo resume                    # every in-flight task carrying a handoff
+todo resume --all              # ...across all registered repos
+todo resume TSK-004 --json     # machine-readable
+```
+
+An unreadable note is an error, never a silent "no handoff", so a handoff cannot be lost to a permissions problem.
 
 ## Archive
 
@@ -186,6 +252,12 @@ Both `todo list --json` and `todo detail --json` emit stable, machine-readable J
 `todo detail --json --full` adds the complete note text in `note_body` and omits `note_preview` and `note_preview_truncated`. `--lines` is ignored when `--full` is set.
 
 `claimed`, `age_days`, `note_preview`, `note_preview_truncated`, and `note_body` are omitted when empty or not applicable.
+
+`todo resume <ref> --json` returns a single object with fields: `id`, `status`, `status_symbol`, `priority`, `opened`, `claimed`, `age_days`, `summary`, `handoff_date`, `note_path`, `handoff`, and `verify` (omitted when the section carries no `### Verify`). Bare `todo resume --json` returns `{schema_version, handoffs[]}` with the same fields per entry plus `repo_project` under `--all`.
+
+`todo handoff --json` returns a single object reporting the write: `id`, `note_path`, `handoff_date`, `replaced`, and `note_created`.
+
+`todo doctor --json` returns `{schema_version, repos[], stale[], summary}`. Each examined repo carries `path` and `registered` (the registry tracks it); under `--adoption` it also carries `adopted` (its `todo.md` is a store symlink, so the tree is backed up) and `action` when unadopted, both omitted when the check did not run, so an absent flag never reads as "checked and fine". `stale[]` lists registry entries whose folder is gone, as `path` plus `project`. `summary` repeats the human counts (`ok`, `stale`, `unregistered`, plus `unadopted` under `--adoption`). The findings are the pre-fix state; with `--fix` the envelope adds `reconciled` (`kept`, `dropped`, `added`) to report what that run changed.
 
 ## Development
 

@@ -717,6 +717,261 @@ func TestAddContentFlagsImplyNote(t *testing.T) {
 	}
 }
 
+func TestAddNoteOwnsItsFrontmatter(t *testing.T) {
+	setupGitRepo(t)
+
+	if _, _, err := runApp(t, []string{"init"}); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+
+	docBlocks := func(t *testing.T, name string) int {
+		t.Helper()
+		data, err := os.ReadFile(filepath.Join(".todo/notes", name))
+		if err != nil {
+			t.Fatalf("read note: %v", err)
+		}
+		count := 0
+		for line := range strings.SplitSeq(string(data), "\n") {
+			if strings.TrimSpace(line) == "---" {
+				count++
+			}
+		}
+		return count
+	}
+
+	// --note-file bridges a free-standing doc: its frontmatter is dropped.
+	src := filepath.Join(t.TempDir(), "plan.md")
+	doc := "---\ntitle: Phase 3\ncategory: areas\nsynopsis: doc synopsis\n---\n\nplan body\n"
+	if err := os.WriteFile(src, []byte(doc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := runApp(t, []string{"add", "-s", "from doc", "--note-file", src}); err != nil {
+		t.Fatalf("add --note-file: %v", err)
+	}
+	if n := docBlocks(t, "TSK-001.md"); n != 2 {
+		t.Errorf("note-file add frontmatter delimiters = %d, want 2", n)
+	}
+	data, err := os.ReadFile(".todo/notes/TSK-001.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "kind: record") || strings.Contains(string(data), "title: Phase 3") {
+		t.Errorf("note = %q, want todo's record block over the doc body", string(data))
+	}
+
+	// A supplied body declaring a park record keeps that disposition.
+	if _, _, err := runApp(t, []string{"add", "-s", "declared park", "--note-content", "---\ncategory: areas\n---\n\nprose"}); err != nil {
+		t.Fatalf("add --note-content with a declared park block: %v", err)
+	}
+	if n := docBlocks(t, "TSK-002.md"); n != 2 {
+		t.Errorf("declared-park add frontmatter delimiters = %d, want 2", n)
+	}
+	data, err = os.ReadFile(".todo/notes/TSK-002.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(data), "---\ncategory: areas\n") {
+		t.Errorf("note = %q, want the declared park block", string(data))
+	}
+
+	// A body contradicting the requested disposition is refused, not stacked.
+	_, _, err = runApp(t, []string{"add", "-s", "conflict", "--kind", "work-order", "--note-content", "---\nkind: record\n---\n\nprose"})
+	if err == nil {
+		t.Fatal("conflicting disposition: expected error")
+	}
+	if !strings.Contains(err.Error(), "declares a record disposition") {
+		t.Errorf("error = %q, want the conflict to be named", err.Error())
+	}
+	if _, err := os.Stat(".todo/notes/TSK-003.md"); !os.IsNotExist(err) {
+		t.Errorf("conflicting add wrote a note file: %v", err)
+	}
+}
+
+func TestPickupOmitsNoteCoordinate(t *testing.T) {
+	setupGitRepo(t)
+
+	if _, _, err := runApp(t, []string{"init"}); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	if _, _, err := runApp(t, []string{"add", "-s", "with a note", "-n", "--note-content", "body"}); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+
+	out, _, err := runApp(t, []string{"pickup", "TSK-001"})
+	if err != nil {
+		t.Fatalf("pickup: %v", err)
+	}
+	if !strings.Contains(out, "- [o] [TSK-001]") {
+		t.Errorf("pickup output = %q, want the claimed line", out)
+	}
+	if strings.Contains(out, "note:") || strings.Contains(out, ".todo/notes") {
+		t.Errorf("pickup output = %q, want no note coordinate; the note comes from detail", out)
+	}
+
+	out, _, err = runApp(t, []string{"detail", "TSK-001", "--json"})
+	if err != nil {
+		t.Fatalf("detail --json: %v", err)
+	}
+	if !strings.Contains(out, `"note_path"`) || !strings.Contains(out, "TSK-001.md") {
+		t.Errorf("detail --json = %q, want the note path", out)
+	}
+}
+
+func TestHandoffAndResumeCLI(t *testing.T) {
+	setupGitRepo(t)
+
+	if _, _, err := runApp(t, []string{"init"}); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	if _, _, err := runApp(t, []string{"add", "-p", "high", "-s", "resume the work", "-n", "--note-content", "brief"}); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+
+	// Only the holder can hand off, so an open task is refused.
+	if _, _, err := runApp(t, []string{"handoff", "TSK-001", "--note-content", "state"}); err == nil {
+		t.Fatal("handoff on an open task: expected a guard error")
+	}
+	if _, _, err := runApp(t, []string{"pickup", "TSK-001"}); err != nil {
+		t.Fatalf("pickup: %v", err)
+	}
+
+	body := "## State\n\nhalf way\n\n### Verify\n\nmake test"
+	out, _, err := runApp(t, []string{"handoff", "TSK-001", "--note-content", body})
+	if err != nil {
+		t.Fatalf("handoff: %v", err)
+	}
+	if !strings.Contains(out, "TSK-001.md: handoff written (") {
+		t.Errorf("handoff output = %q, want the note path and the write", out)
+	}
+
+	note, err := os.ReadFile(filepath.Join(".todo", "notes", "TSK-001.md"))
+	if err != nil {
+		t.Fatalf("read note: %v", err)
+	}
+	if !strings.Contains(string(note), "## Handoff (") || !strings.Contains(string(note), "half way") {
+		t.Errorf("note = %q, want the handoff section", string(note))
+	}
+	if !strings.Contains(string(note), "## Handoff (") || strings.Count(string(note), "kind: record") != 1 {
+		t.Errorf("note = %q, want exactly one frontmatter block", string(note))
+	}
+
+	// resume <ref> hands the section back, verify commands included.
+	out, _, err = runApp(t, []string{"resume", "TSK-001"})
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	for _, want := range []string{"TSK-001 (priority: high)", "## Handoff (", "half way", "make test"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("resume output = %q, want %q", out, want)
+		}
+	}
+
+	out, _, err = runApp(t, []string{"resume", "TSK-001", "--json"})
+	if err != nil {
+		t.Fatalf("resume --json: %v", err)
+	}
+	if !strings.Contains(out, `"id": "TSK-001"`) || !strings.Contains(out, `"verify": "make test"`) {
+		t.Errorf("resume --json = %q, want the handoff and its verify commands", out)
+	}
+
+	// The bare form is the repo-wide re-entry view.
+	out, _, err = runApp(t, []string{"resume"})
+	if err != nil {
+		t.Fatalf("resume (bare): %v", err)
+	}
+	if !strings.Contains(out, "TSK-001") || !strings.Contains(out, "resume the work") {
+		t.Errorf("resume output = %q, want the in-flight task listed", out)
+	}
+
+	out, _, err = runApp(t, []string{"resume", "--json"})
+	if err != nil {
+		t.Fatalf("resume --json (bare): %v", err)
+	}
+	if !strings.Contains(out, `"schema_version": 1`) || !strings.Contains(out, `"handoffs"`) {
+		t.Errorf("resume --json = %q, want the versioned envelope", out)
+	}
+
+	// A handoff --json reports the write without the note text.
+	out, _, err = runApp(t, []string{"handoff", "TSK-001", "--note-content", "again", "--json"})
+	if err != nil {
+		t.Fatalf("handoff --json: %v", err)
+	}
+	if !strings.Contains(out, `"replaced": true`) || !strings.Contains(out, "TSK-001.md") {
+		t.Errorf("handoff --json = %q, want the replacement reported", out)
+	}
+
+	// Replacing keeps one section.
+	note, err = os.ReadFile(filepath.Join(".todo", "notes", "TSK-001.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(string(note), "## Handoff"); n != 1 {
+		t.Errorf("note = %q, want one handoff section, got %d", string(note), n)
+	}
+	if strings.Contains(string(note), "half way") {
+		t.Errorf("note = %q, want the first handoff replaced", string(note))
+	}
+
+	// Guards.
+	if _, _, err := runApp(t, []string{"handoff", "TSK-001", "--note-content", "x", "--note-file", "y"}); err == nil {
+		t.Error("handoff with both sources: expected a mutual-exclusion error")
+	}
+	if _, _, err := runApp(t, []string{"handoff", "TSK-001"}); err == nil {
+		t.Error("handoff with no text: expected an error")
+	}
+	if _, _, err := runApp(t, []string{"resume", "TSK-001", "--all"}); err == nil {
+		t.Error("resume --all with a ref: expected an error")
+	}
+	if _, _, err := runApp(t, []string{"resume", "TSK-099"}); err == nil {
+		t.Error("resume of an unknown ref: expected an error")
+	}
+
+	// An in-flight task with no handoff yet is a clear miss, not a silent empty.
+	if _, _, err := runApp(t, []string{"add", "-s", "no handoff yet"}); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	if _, _, err := runApp(t, []string{"pickup", "TSK-002"}); err != nil {
+		t.Fatalf("pickup TSK-002: %v", err)
+	}
+	_, _, err = runApp(t, []string{"resume", "TSK-002"})
+	if err == nil {
+		t.Fatal("resume of a task with no handoff: expected an error")
+	}
+	if !strings.Contains(err.Error(), "no handoff recorded for TSK-002") {
+		t.Errorf("error = %q, want the missing handoff named", err.Error())
+	}
+}
+
+func TestHandoffCreatesNoteForNotelessTask(t *testing.T) {
+	setupGitRepo(t)
+
+	if _, _, err := runApp(t, []string{"init"}); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	if _, _, err := runApp(t, []string{"add", "-s", "no note at all"}); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	if _, _, err := runApp(t, []string{"pickup", "TSK-001"}); err != nil {
+		t.Fatalf("pickup: %v", err)
+	}
+
+	out, _, err := runApp(t, []string{"handoff", "TSK-001", "--note-content", "state"})
+	if err != nil {
+		t.Fatalf("handoff: %v", err)
+	}
+	if !strings.Contains(out, "handoff written (new note)") {
+		t.Errorf("handoff output = %q, want the new note reported", out)
+	}
+
+	out, _, err = runApp(t, []string{"detail", "TSK-001", "--json"})
+	if err != nil {
+		t.Fatalf("detail --json: %v", err)
+	}
+	if !strings.Contains(out, `"disposition": "record"`) || !strings.Contains(out, `"note_exists": true`) {
+		t.Errorf("detail --json = %q, want a record note on disk", out)
+	}
+}
+
 func TestInitRegistersRepo(t *testing.T) {
 	dir := setupGitRepo(t)
 	dir, _ = filepath.EvalSymlinks(dir)
@@ -934,7 +1189,7 @@ func TestDoctorReportsAndFixes(t *testing.T) {
 		t.Fatalf("seed registry: %v", err)
 	}
 
-	out, _, err := runApp(t, []string{"doctor", "--all", "--depth", "2"})
+	out, _, err := runApp(t, []string{"doctor", "--all", "--adoption", "--depth", "2"})
 	if err != nil {
 		t.Fatalf("doctor: %v", err)
 	}
@@ -943,6 +1198,15 @@ func TestDoctorReportsAndFixes(t *testing.T) {
 	}
 	if !strings.Contains(out, "unregistered\t"+nested) {
 		t.Errorf("doctor output missing unregistered entry: %q", out)
+	}
+	// Both repos hold a real todo.md, so both trees are outside every backup.
+	for _, want := range []string{repoA, nested} {
+		if !strings.Contains(out, "unadopted\t"+want) {
+			t.Errorf("doctor output missing unadopted repo %s: %q", want, out)
+		}
+	}
+	if !strings.Contains(out, "lnk project init") {
+		t.Errorf("doctor output missing the corrective step: %q", out)
 	}
 
 	_, _, err = runApp(t, []string{"doctor", "--all", "--fix", "--depth", "2"})
@@ -963,6 +1227,114 @@ func TestDoctorReportsAndFixes(t *testing.T) {
 	}
 	if !paths[repoA] || !paths[nested] || paths[missing] {
 		t.Errorf("fixed paths = %v", paths)
+	}
+}
+
+func TestDoctorFlagsUnadoptedRepo(t *testing.T) {
+	repo := setupGitRepo(t)
+	if _, _, err := runApp(t, []string{"init"}); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	// doctor reports the canonical path, as the registry stores it.
+	wantRepo, err := filepath.EvalSymlinks(cwd)
+	if err != nil {
+		t.Fatalf("resolve repo: %v", err)
+	}
+
+	// init writes a real todo.md, but adoption is a host-side convention: the
+	// default doctor run says nothing about it.
+	out, _, err := runApp(t, []string{"doctor"})
+	if err != nil {
+		t.Fatalf("doctor: %v", err)
+	}
+	if strings.Contains(out, "unadopted\t") {
+		t.Errorf("default doctor run reported adoption: %q", out)
+	}
+	if !strings.Contains(out, "summary: 1 ok, 0 stale, 0 unregistered\n") {
+		t.Errorf("default doctor summary = %q, want the registry-only counts", out)
+	}
+
+	out, _, err = runApp(t, []string{"doctor", "--json"})
+	if err != nil {
+		t.Fatalf("doctor --json: %v", err)
+	}
+	if strings.Contains(out, `"adopted"`) {
+		t.Errorf("default doctor --json reported adoption: %q", out)
+	}
+
+	// --adoption is the opt-in check.
+	out, _, err = runApp(t, []string{"doctor", "--adoption"})
+	if err != nil {
+		t.Fatalf("doctor --adoption: %v", err)
+	}
+	if !strings.Contains(out, "unadopted\t"+wantRepo) {
+		t.Errorf("doctor output missing unadopted repo: %q", out)
+	}
+	if !strings.Contains(out, "lnk project init") {
+		t.Errorf("doctor output missing the corrective step: %q", out)
+	}
+	// The repo init registered is the repo doctor scans, not an unregistered
+	// twin reached through a symlinked path.
+	if strings.Contains(out, "unregistered\t") {
+		t.Errorf("doctor reported the current repo as unregistered: %q", out)
+	}
+
+	out, _, err = runApp(t, []string{"doctor", "--adoption", "--json"})
+	if err != nil {
+		t.Fatalf("doctor --adoption --json: %v", err)
+	}
+	var got struct {
+		SchemaVersion int `json:"schema_version"`
+		Repos         []struct {
+			Path       string `json:"path"`
+			Registered bool   `json:"registered"`
+			Adopted    *bool  `json:"adopted"`
+			Action     string `json:"action"`
+		} `json:"repos"`
+		Summary struct {
+			Unadopted *int `json:"unadopted"`
+		} `json:"summary"`
+	}
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("decode doctor --json: %v\n%s", err, out)
+	}
+	if len(got.Repos) != 1 || got.Repos[0].Path != wantRepo {
+		t.Fatalf("doctor --json repos = %+v, want the current repo", got.Repos)
+	}
+	if !got.Repos[0].Registered {
+		t.Error("doctor --json reported the registered repo as unregistered")
+	}
+	if got.Repos[0].Adopted == nil || *got.Repos[0].Adopted {
+		t.Errorf("doctor --json adopted = %v, want false", got.Repos[0].Adopted)
+	}
+	if got.Repos[0].Action == "" || got.Summary.Unadopted == nil || *got.Summary.Unadopted != 1 {
+		t.Errorf("doctor --json = %+v, want the corrective action and one unadopted repo", got)
+	}
+
+	// Adopt the tree: the store owns todo.md, the repo holds a link to it. The
+	// check must go quiet on an adopted repo.
+	store := filepath.Join(t.TempDir(), "todo.md")
+	if err := os.Rename(filepath.Join(repo, ".todo", "todo.md"), store); err != nil {
+		t.Fatalf("move todo.md into the store: %v", err)
+	}
+	if err := os.Symlink(store, filepath.Join(repo, ".todo", "todo.md")); err != nil {
+		t.Fatalf("symlink todo.md: %v", err)
+	}
+
+	out, _, err = runApp(t, []string{"doctor", "--adoption"})
+	if err != nil {
+		t.Fatalf("doctor --adoption adopted: %v", err)
+	}
+	if strings.Contains(out, "unadopted\t") {
+		t.Errorf("adopted repo reported as unadopted: %q", out)
+	}
+	// A checked zero is reported, so the caller can tell it from "not checked".
+	if !strings.Contains(out, "0 unadopted") {
+		t.Errorf("doctor summary missing zero unadopted: %q", out)
 	}
 }
 

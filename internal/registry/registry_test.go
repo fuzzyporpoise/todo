@@ -84,7 +84,7 @@ func TestDropMissing(t *testing.T) {
 	}
 }
 
-func TestFindUnregistered(t *testing.T) {
+func TestFindTodoReposAndUnregistered(t *testing.T) {
 	dir := t.TempDir()
 	registered := filepath.Join(dir, "registered")
 	unregistered := filepath.Join(dir, "unregistered")
@@ -96,16 +96,83 @@ func TestFindUnregistered(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-
-	entries := []Entry{{Path: registered}}
-	found, err := FindUnregistered([]string{dir}, 2, entries)
-	if err != nil {
-		t.Fatalf("FindUnregistered: %v", err)
+	if err := os.MkdirAll(filepath.Join(dir, "plain"), 0o755); err != nil {
+		t.Fatal(err)
 	}
+
+	repos, err := FindTodoRepos([]string{dir}, 2)
+	if err != nil {
+		t.Fatalf("FindTodoRepos: %v", err)
+	}
+	if len(repos) != 2 {
+		t.Fatalf("repos = %v, want the two .todo folders", repos)
+	}
+
+	found := Unregistered(repos, []Entry{{Path: registered}})
 	if len(found) != 1 {
 		t.Fatalf("found = %d, want 1", len(found))
 	}
 	if found[0] != unregistered {
 		t.Errorf("found = %q, want %q", found[0], unregistered)
+	}
+}
+
+func TestEnclosingRepo(t *testing.T) {
+	repo := t.TempDir()
+	writeTodoFile(t, repo)
+	sub := filepath.Join(repo, "a", "b")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	got, ok := EnclosingRepo(sub)
+	if !ok {
+		t.Fatal("EnclosingRepo from a subdirectory found no repo")
+	}
+	if got != repo {
+		t.Errorf("enclosing repo = %q, want %q", got, repo)
+	}
+
+	if _, ok := EnclosingRepo(t.TempDir()); ok {
+		t.Error("EnclosingRepo outside a todo repo reported one")
+	}
+}
+
+func TestUnadopted(t *testing.T) {
+	dir := t.TempDir()
+	adopted := filepath.Join(dir, "adopted")
+	unadopted := filepath.Join(dir, "unadopted")
+	for _, p := range []string{adopted, unadopted} {
+		if err := os.MkdirAll(filepath.Join(p, ".todo"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeTodoFile(t, unadopted)
+
+	store := filepath.Join(dir, "store-todo.md")
+	if err := os.WriteFile(store, []byte("---\n---\n\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(store, filepath.Join(adopted, ".todo", "todo.md")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	found, err := Unadopted([]string{adopted, unadopted})
+	if err != nil {
+		t.Fatalf("Unadopted: %v", err)
+	}
+	if len(found) != 1 || found[0] != unadopted {
+		t.Errorf("unadopted = %v, want [%s]", found, unadopted)
+	}
+}
+
+// writeTodoFile creates a repo-local .todo/todo.md as a real file.
+func writeTodoFile(t *testing.T, repo string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(repo, ".todo"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, ".todo", "todo.md"), []byte("---\n---\n\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }

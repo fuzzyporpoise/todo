@@ -55,6 +55,18 @@ func readTasks(t *testing.T, todoPath string) []Task {
 	return tasks
 }
 
+// countFrontmatterDelims counts the --- delimiter lines in a note, which is how
+// the tests assert a note carries exactly one frontmatter block.
+func countFrontmatterDelims(content string) int {
+	count := 0
+	for line := range strings.SplitSeq(content, "\n") {
+		if strings.TrimSpace(line) == "---" {
+			count++
+		}
+	}
+	return count
+}
+
 func TestNormalizeTaskRef(t *testing.T) {
 	for _, tc := range []struct {
 		ref  string
@@ -1832,11 +1844,249 @@ func TestBuildNoteContentRejectsMultilineFrontmatter(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := buildNoteContent("body", "", "", tc.synopsis, tc.source, "fallback", "2026-09-26")
+			_, err := buildNoteContent(noteBuild{
+				Body:             "body",
+				Synopsis:         tc.synopsis,
+				Source:           tc.source,
+				FallbackSynopsis: "fallback",
+				Created:          "2026-09-26",
+			})
 			if err == nil {
 				t.Fatal("expected error for multiline frontmatter value")
 			}
 		})
+	}
+}
+
+func TestBuildNoteContentReconcilesSuppliedFrontmatter(t *testing.T) {
+	base := noteBuild{FallbackSynopsis: "task summary", Created: "2026-08-18"}
+
+	cases := []struct {
+		name     string
+		body     string
+		kind     string
+		category string
+		synopsis string
+		source   string
+		want     string
+		wantErr  bool
+	}{
+		{
+			name: "record block fields become fallbacks",
+			body: "---\nkind: record\ncreated: 2020-01-01\nsource: notes\nsynopsis: from the block\n---\n\nbody prose",
+			want: "---\nkind: record\ncreated: 2026-08-18\nsource: notes\nsynopsis: from the block\n---\n\nbody prose\n",
+		},
+		{
+			name: "park block is adopted when no flag names a disposition",
+			body: "---\ncategory: areas\nsource: notes\n---\n\nbody prose",
+			want: "---\ncategory: areas\ncreated: 2026-08-18\nsource: notes\nsynopsis: task summary\n---\n\nbody prose\n",
+		},
+		{
+			name:     "flag category overrides the declared one",
+			body:     "---\ncategory: areas\n---\n\nbody prose",
+			category: "projects",
+			want:     "---\ncategory: projects\ncreated: 2026-08-18\nsource: repo\nsynopsis: task summary\n---\n\nbody prose\n",
+		},
+		{
+			name:     "flag synopsis wins over the block",
+			body:     "---\nkind: record\nsynopsis: from the block\n---\n\nbody prose",
+			synopsis: "given synopsis",
+			want:     "---\nkind: record\ncreated: 2026-08-18\nsource: repo\nsynopsis: given synopsis\n---\n\nbody prose\n",
+		},
+		{
+			name: "doc metadata block is dropped with the block",
+			body: "---\ntitle: Plan\ntags: draft\n---\n\nbody prose",
+			want: "---\nkind: record\ncreated: 2026-08-18\nsource: repo\nsynopsis: task summary\n---\n\nbody prose\n",
+		},
+		{
+			name: "stacked blocks heal into one",
+			body: "---\nkind: record\nsynopsis: outer\n---\n\n---\ncategory: areas\n---\n\ninner prose",
+			want: "---\ncategory: areas\ncreated: 2026-08-18\nsource: repo\nsynopsis: outer\n---\n\ninner prose\n",
+		},
+		{
+			name:    "work-order flag over a declared record errors",
+			body:    "---\nkind: record\n---\n\nbody prose",
+			kind:    "work-order",
+			wantErr: true,
+		},
+		{
+			name:     "category flag over a declared work-order errors",
+			body:     "---\nkind: work-order\n---\n\nbody prose",
+			category: "areas",
+			wantErr:  true,
+		},
+		{
+			name: "declared work-order matches the flag and re-renders once",
+			body: "---\nkind: work-order\n---\n\nbody prose",
+			kind: "work-order",
+			want: "---\nkind: work-order\n---\n\nbody prose",
+		},
+		{
+			name: "a body opening with a horizontal rule is not a block",
+			body: "---\nnot a frontmatter block\n---\n\nbody prose",
+			want: "---\nkind: record\ncreated: 2026-08-18\nsource: repo\nsynopsis: task summary\n---\n\n---\nnot a frontmatter block\n---\n\nbody prose\n",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			nb := base
+			nb.Body = tc.body
+			nb.Kind = tc.kind
+			nb.Category = tc.category
+			nb.Synopsis = tc.synopsis
+			nb.Source = tc.source
+
+			got, err := buildNoteContent(nb)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("want error, got content %q", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Errorf("content = %q, want %q", got, tc.want)
+			}
+			if !strings.Contains(tc.body, "not a frontmatter block") {
+				if n := countFrontmatterDelims(got); n != 2 {
+					t.Errorf("frontmatter delimiters = %d, want 2 in %q", n, got)
+				}
+			}
+		})
+	}
+}
+
+func TestAddNoteFileStripsDocFrontmatter(t *testing.T) {
+	fixed := time.Date(2026, 8, 18, 10, 30, 0, 0, time.UTC)
+	setNow(func() time.Time { return fixed })
+	defer setNow(time.Now)
+
+	todoPath, notesDir := writeTestTodo(t, nil)
+	src := filepath.Join(t.TempDir(), "plan.md")
+	doc := "---\ntitle: Phase 3\ncategory: areas\nsource: notes\nsynopsis: doc synopsis\n---\n\nplan body prose\n"
+	if err := os.WriteFile(src, []byte(doc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Add(AddOptions{
+		TodoPath:   todoPath,
+		NotesDir:   notesDir,
+		Priority:   "med",
+		Summary:    "copy doc",
+		CreateNote: true,
+		NoteFile:   src,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(notesDir, "TSK-001.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(data)
+	// The doc's frontmatter belongs to the doc: the note carries todo's block.
+	want := "---\nkind: record\ncreated: 2026-08-18\nsource: repo\nsynopsis: copy doc\n---\n\nplan body prose\n"
+	if got != want {
+		t.Errorf("note = %q, want %q", got, want)
+	}
+	if n := countFrontmatterDelims(got); n != 2 {
+		t.Errorf("frontmatter delimiters = %d, want 2 in %q", n, got)
+	}
+}
+
+func TestAddNoteFileDryRunPreviewsOneBlock(t *testing.T) {
+	fixed := time.Date(2026, 8, 18, 10, 30, 0, 0, time.UTC)
+	setNow(func() time.Time { return fixed })
+	defer setNow(time.Now)
+
+	todoPath, notesDir := writeTestTodo(t, nil)
+	src := filepath.Join(t.TempDir(), "plan.md")
+	doc := "---\ntitle: Phase 3\n---\n\nplan body prose\n"
+	if err := os.WriteFile(src, []byte(doc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := Add(AddOptions{
+		TodoPath:   todoPath,
+		NotesDir:   notesDir,
+		Priority:   "med",
+		Summary:    "copy doc",
+		CreateNote: true,
+		NoteFile:   src,
+		DryRun:     true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := countFrontmatterDelims(result.NoteContent); n != 2 {
+		t.Errorf("dry run frontmatter delimiters = %d, want 2 in %q", n, result.NoteContent)
+	}
+	if _, err := os.Stat(filepath.Join(notesDir, "TSK-001.md")); !os.IsNotExist(err) {
+		t.Errorf("dry run wrote a note file: %v", err)
+	}
+}
+
+func TestAddNoteContentReconcilesDeclaredPark(t *testing.T) {
+	fixed := time.Date(2026, 8, 18, 10, 30, 0, 0, time.UTC)
+	setNow(func() time.Time { return fixed })
+	defer setNow(time.Now)
+
+	todoPath, notesDir := writeTestTodo(t, nil)
+
+	_, err := Add(AddOptions{
+		TodoPath:    todoPath,
+		NotesDir:    notesDir,
+		Priority:    "med",
+		Summary:     "declared park",
+		CreateNote:  true,
+		NoteContent: "---\ncategory: areas\n---\n\nbody prose",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(notesDir, "TSK-001.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(data)
+	want := "---\ncategory: areas\ncreated: 2026-08-18\nsource: repo\nsynopsis: declared park\n---\n\nbody prose\n"
+	if got != want {
+		t.Errorf("note = %q, want %q", got, want)
+	}
+	if disp, err := NoteDisposition(filepath.Join(notesDir, "TSK-001.md")); err != nil || disp != DispositionPark {
+		t.Errorf("disposition = %q (err %v), want park", disp, err)
+	}
+}
+
+func TestAddNoteContentDispositionConflictWritesNothing(t *testing.T) {
+	fixed := time.Date(2026, 8, 18, 10, 30, 0, 0, time.UTC)
+	setNow(func() time.Time { return fixed })
+	defer setNow(time.Now)
+
+	todoPath, notesDir := writeTestTodo(t, nil)
+
+	_, err := Add(AddOptions{
+		TodoPath:    todoPath,
+		NotesDir:    notesDir,
+		Priority:    "med",
+		Summary:     "conflict",
+		CreateNote:  true,
+		NoteContent: "---\nkind: record\n---\n\nbody prose",
+		Kind:        "work-order",
+	})
+	if err == nil {
+		t.Fatal("Add with a conflicting body declaration: expected error")
+	}
+	if len(readTasks(t, todoPath)) != 0 {
+		t.Error("conflicting add wrote a task")
+	}
+	if _, err := os.Stat(filepath.Join(notesDir, "TSK-001.md")); !os.IsNotExist(err) {
+		t.Errorf("conflicting add wrote a note file: %v", err)
 	}
 }
 
