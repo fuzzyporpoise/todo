@@ -271,6 +271,98 @@ func newApp() *cli.Command {
 					return runPickup(cmd, cfg)
 				},
 			},
+			func() *cli.Command {
+				var (
+					noteContent string
+					noteFile    string
+					asJSON      bool
+				)
+				noteContentFlag := &cli.StringFlag{
+					Name:        "note-content",
+					Destination: &noteContent,
+					Usage:       "handoff text: state, verify commands, open/next; use '-' to read from stdin",
+				}
+				noteFileFlag := &cli.StringFlag{
+					Name:        "note-file",
+					Destination: &noteFile,
+					Usage:       "copy a file's body into the handoff section (copy, not move; the source's own frontmatter is dropped)",
+				}
+				return &cli.Command{
+					Name:      "handoff",
+					Usage:     "write a replaceable ## Handoff section onto an in-progress task's note",
+					ArgsUsage: "<task>",
+					Flags: []cli.Flag{
+						noteContentFlag,
+						noteFileFlag,
+						&cli.BoolFlag{
+							Name:        "json",
+							Destination: &asJSON,
+							Usage:       "output machine-readable JSON",
+						},
+					},
+					MutuallyExclusiveFlags: []cli.MutuallyExclusiveFlags{
+						{
+							Category: "handoff source",
+							// note-content and note-file are alternative
+							// sources; each in its own path so at most one may
+							// be set.
+							Flags: [][]cli.Flag{{noteContentFlag}, {noteFileFlag}},
+						},
+					},
+					Action: func(ctx context.Context, cmd *cli.Command) error {
+						cfg, err := requireRepoConfig()
+						if err != nil {
+							return exitError(err)
+						}
+						return runHandoff(cmd, cfg, handoffOptions{
+							noteContent: noteContent,
+							noteFile:    noteFile,
+							asJSON:      asJSON,
+						})
+					},
+				}
+			}(),
+			func() *cli.Command {
+				var (
+					all    bool
+					asJSON bool
+				)
+				return &cli.Command{
+					Name:      "resume",
+					Usage:     "read back a task's handoff (bare: list every in-progress task carrying one)",
+					ArgsUsage: "[task]",
+					Flags: []cli.Flag{
+						&cli.BoolFlag{
+							Name:        "all",
+							Destination: &all,
+							Usage:       "list handoffs across all registered repos",
+						},
+						&cli.BoolFlag{
+							Name:        "json",
+							Destination: &asJSON,
+							Usage:       "output machine-readable JSON",
+						},
+					},
+					Action: func(ctx context.Context, cmd *cli.Command) error {
+						opts := resumeOptions{
+							ref:    strings.TrimSpace(cmd.Args().First()),
+							all:    all,
+							asJSON: asJSON,
+						}
+						if opts.all && opts.ref != "" {
+							return exitError(errors.New("--all lists handoffs across repos and cannot be combined with a task reference"))
+						}
+						if opts.all {
+							return runResume(cmd, appConfig{}, opts)
+						}
+						cfg, err := requireRepoConfig()
+						if err != nil {
+							return exitError(err)
+						}
+						return runResume(cmd, cfg, opts)
+					},
+				}
+			}(),
 			{
 				Name:      "release",
 				Usage:     "release a picked-up task back to open (drop its claim)",

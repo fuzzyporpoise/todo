@@ -257,6 +257,21 @@ func stripFrontmatter(body string) string {
 	return stripped
 }
 
+// splitLeadingFrontmatter splits note into its leading frontmatter blocks and
+// the body that follows them, so a caller can place content directly below the
+// block without re-rendering it.
+func splitLeadingFrontmatter(note string) (prefix, body string) {
+	rest := note
+	for {
+		_, tail, ok := leadingBlock(rest)
+		if !ok {
+			return prefix, rest
+		}
+		prefix += rest[:len(rest)-len(tail)]
+		rest = tail
+	}
+}
+
 // extractFrontmatter splits the leading frontmatter blocks off body, returning
 // what they declare and the remaining body. Stacked blocks are consumed in
 // order, which is how an already-double-blocked note heals into one.

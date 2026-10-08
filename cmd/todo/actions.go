@@ -435,6 +435,9 @@ func registerRepo(entries []registry.Entry, path string) []registry.Entry {
 	return entries
 }
 
+// runPickup prints the claimed task line and nothing else. The companion note
+// is `detail`'s answer, so pickup never hands back a bare path that invites
+// browsing the directory it lives in.
 func runPickup(cmd *cli.Command, cfg appConfig) error {
 	ref, err := requireTaskRef(cmd)
 	if err != nil {
@@ -444,7 +447,247 @@ func runPickup(cmd *cli.Command, cfg appConfig) error {
 	if err != nil {
 		return exitError(err)
 	}
-	printTaskLine(outWriter(cmd), res.Line, res.Note)
+	printTaskLine(outWriter(cmd), res.Line, "")
+	return nil
+}
+
+// handoffOptions carries the flag values for the handoff command.
+type handoffOptions struct {
+	noteContent string
+	noteFile    string
+	asJSON      bool
+}
+
+// jsonHandoff is the machine-readable representation of a handoff write.
+type jsonHandoff struct {
+	ID          string `json:"id"`
+	NotePath    string `json:"note_path"`
+	HandoffDate string `json:"handoff_date"`
+	Replaced    bool   `json:"replaced"`
+	NoteCreated bool   `json:"note_created"`
+}
+
+func runHandoff(cmd *cli.Command, cfg appConfig, opts handoffOptions) error {
+	ref, err := requireTaskRef(cmd)
+	if err != nil {
+		return exitError(err)
+	}
+
+	// --note-file is read by the domain layer, so only the flag/stdin path is
+	// resolved here; reading stdin when a file was given would block.
+	body := opts.noteContent
+	if opts.noteFile == "" && (body == "-" || body == "") {
+		data, err := io.ReadAll(inReader(cmd))
+		if err != nil {
+			return exitError(fmt.Errorf("read handoff stdin: %w", err))
+		}
+		body = string(data)
+	}
+
+	res, err := todo.Handoff(todo.HandoffOptions{
+		TodoPath: cfg.todoPath,
+		NotesDir: cfg.notesDir,
+		Ref:      ref,
+		Body:     body,
+		BodyFile: opts.noteFile,
+	})
+	if err != nil {
+		return exitError(err)
+	}
+
+	out := outWriter(cmd)
+	if opts.asJSON {
+		enc := json.NewEncoder(out)
+		enc.SetIndent("", "  ")
+		return enc.Encode(jsonHandoff{
+			ID:          res.ID,
+			NotePath:    res.NotePath,
+			HandoffDate: res.Date,
+			Replaced:    res.Replaced,
+			NoteCreated: res.NoteCreated,
+		})
+	}
+
+	verb := "written"
+	if res.Replaced {
+		verb = "replaced"
+	}
+	if res.NoteCreated {
+		verb += " (new note)"
+	}
+	_, _ = fmt.Fprintf(out, "%s: handoff %s (%s)\n", res.NotePath, verb, res.Date)
+	return nil
+}
+
+// resumeOptions carries the flag values for the resume command.
+type resumeOptions struct {
+	ref    string
+	all    bool
+	asJSON bool
+}
+
+// resumeEntry augments a handoff entry with cross-repo metadata for output.
+type resumeEntry struct {
+	todo.HandoffEntry
+	repoProject string
+}
+
+// jsonResume is the machine-readable representation of one recorded handoff.
+type jsonResume struct {
+	ID           string `json:"id"`
+	Status       string `json:"status"`
+	StatusSymbol string `json:"status_symbol"`
+	Priority     string `json:"priority"`
+	Opened       string `json:"opened"`
+	Claimed      string `json:"claimed,omitempty"`
+	AgeDays      *int   `json:"age_days,omitempty"`
+	Summary      string `json:"summary"`
+	HandoffDate  string `json:"handoff_date,omitempty"`
+	NotePath     string `json:"note_path"`
+	Handoff      string `json:"handoff"`
+	Verify       string `json:"verify,omitempty"`
+	RepoProject  string `json:"repo_project,omitempty"`
+}
+
+// jsonResumeEnvelope wraps the bare resume --json output in a versioned
+// contract so consumers can detect schema drift.
+type jsonResumeEnvelope struct {
+	SchemaVersion int          `json:"schema_version"`
+	Handoffs      []jsonResume `json:"handoffs"`
+}
+
+func toJSONResume(e resumeEntry) jsonResume {
+	t := e.Task
+	jr := jsonResume{
+		ID:           t.ID,
+		Status:       t.Status.StatusName(),
+		StatusSymbol: string(t.Status),
+		Priority:     string(t.Priority),
+		Opened:       t.Opened,
+		Claimed:      t.Claimed,
+		Summary:      t.Summary,
+		HandoffDate:  e.Date,
+		NotePath:     e.NotePath,
+		Handoff:      e.Handoff,
+		Verify:       e.Verify,
+		RepoProject:  e.repoProject,
+	}
+	if age := t.AgeDays(); age >= 0 {
+		jr.AgeDays = &age
+	}
+	return jr
+}
+
+// runResume prints a task's recorded handoff, or - for the bare form - every
+// in-progress task carrying one. A single ref emits one object under --json;
+// the bare form emits a versioned envelope.
+func runResume(cmd *cli.Command, cfg appConfig, opts resumeOptions) error {
+	out := outWriter(cmd)
+	errOut := cmd.Root().ErrWriter
+	if errOut == nil {
+		errOut = os.Stderr
+	}
+
+	var entries []resumeEntry
+	if opts.ref != "" {
+		got, err := todo.Resume(todo.ResumeOptions{
+			TodoPath: cfg.todoPath,
+			NotesDir: cfg.notesDir,
+			Ref:      opts.ref,
+		})
+		if err != nil {
+			return exitError(err)
+		}
+		entries = []resumeEntry{{HandoffEntry: got[0]}}
+	} else if opts.all {
+		reg, err := registry.Load(registryPath())
+		if err != nil {
+			return exitError(err)
+		}
+		for _, e := range reg {
+			if _, err := os.Stat(e.Path); err != nil {
+				_, _ = fmt.Fprintf(errOut, "warning: skipping missing repo %s: %v\n", e.Path, err)
+				continue
+			}
+			got, err := todo.Resume(todo.ResumeOptions{
+				TodoPath: filepath.Join(e.Path, ".todo", "todo.md"),
+				NotesDir: filepath.Join(e.Path, ".todo", "notes"),
+			})
+			if err != nil {
+				_, _ = fmt.Fprintf(errOut, "warning: cannot read %s: %v\n", e.Path, err)
+				continue
+			}
+			for _, entry := range got {
+				entries = append(entries, resumeEntry{HandoffEntry: entry, repoProject: projectFromEntry(e)})
+			}
+		}
+	} else {
+		got, err := todo.Resume(todo.ResumeOptions{TodoPath: cfg.todoPath, NotesDir: cfg.notesDir})
+		if err != nil {
+			return exitError(err)
+		}
+		for _, entry := range got {
+			entries = append(entries, resumeEntry{HandoffEntry: entry})
+		}
+	}
+
+	if opts.asJSON {
+		enc := json.NewEncoder(out)
+		enc.SetIndent("", "  ")
+		if opts.ref != "" {
+			return enc.Encode(toJSONResume(entries[0]))
+		}
+		items := make([]jsonResume, 0, len(entries))
+		for _, e := range entries {
+			items = append(items, toJSONResume(e))
+		}
+		return enc.Encode(jsonResumeEnvelope{SchemaVersion: 1, Handoffs: items})
+	}
+
+	if opts.ref != "" {
+		return printHandoff(out, entries[0])
+	}
+
+	if len(entries) == 0 {
+		_, _ = fmt.Fprintln(out, "No handoffs recorded.")
+		return nil
+	}
+
+	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	if opts.all {
+		_, _ = fmt.Fprintln(w, "\tID\tCLAIMED\tHANDOFF\tREPO\tSUMMARY")
+		_, _ = fmt.Fprintln(w, "\t--\t-------\t-------\t----\t-------")
+	} else {
+		_, _ = fmt.Fprintln(w, "\tID\tCLAIMED\tHANDOFF\tSUMMARY")
+		_, _ = fmt.Fprintln(w, "\t--\t-------\t-------\t-------")
+	}
+	for _, e := range entries {
+		repo := ""
+		if opts.all {
+			repo = "\t" + e.repoProject
+		}
+		_, _ = fmt.Fprintf(w, "[%s]\t%s\t%s\t%s%s\t%s\n",
+			e.Task.Status, e.Task.ID, dashIfEmpty(e.Task.Claimed), dashIfEmpty(e.Date), repo, e.Task.Summary)
+	}
+	if err := w.Flush(); err != nil {
+		return exitError(err)
+	}
+	return nil
+}
+
+// printHandoff renders one task's handoff: the header lines, the note path, and
+// the stored section verbatim, which is where its verify commands already live.
+func printHandoff(out io.Writer, e resumeEntry) error {
+	heading := "## Handoff"
+	if e.Date != "" {
+		heading = fmt.Sprintf("## Handoff (%s)", e.Date)
+	}
+	_, _ = fmt.Fprintf(out, "%s (priority: %s) | status: %s | claimed: %s\n",
+		e.Task.ID, e.Task.Priority, e.Task.Status.Description(), dashIfEmpty(e.Task.Claimed))
+	_, _ = fmt.Fprintf(out, "summary: %s\n", e.Task.Summary)
+	_, _ = fmt.Fprintf(out, "note: %s\n", e.NotePath)
+	_, _ = fmt.Fprintln(out)
+	_, _ = fmt.Fprintf(out, "%s\n\n%s\n", heading, e.Handoff)
 	return nil
 }
 

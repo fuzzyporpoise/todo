@@ -79,8 +79,15 @@ todo detail --no-note TSK-001               # show task details without note pre
 todo detail --full TSK-001                  # show the complete note body
 todo detail --json TSK-001                  # machine-readable detail output
 todo detail --json --full TSK-001           # ...with the complete note body in note_body
-todo pickup TSK-001                         # mark a task in progress (adds claimed date)
-todo release TSK-001                        # release a picked-up task back to open (drop claim)
+todo pickup TSK-001                         # mark a task in progress (adds claimed date); prints the line only
+todo handoff TSK-001 --note-content "state" # write a replaceable ## Handoff section onto an in-progress note
+todo handoff TSK-001 --note-file ./state.md # ...or copy a file's body (its frontmatter is dropped)
+todo handoff TSK-001 --json                # machine-readable handoff write
+todo resume                                # list every in-progress task whose note carries a handoff
+todo resume TSK-001                        # print one task's handoff, verify commands included
+todo resume --all                          # ...across all registered repos
+todo resume TSK-001 --json                 # machine-readable handoff output
+todo release TSK-001                       # release a picked-up task back to open (drop claim)
 todo complete TSK-001                       # mark a task done (drops claimed)
 todo complete --clear TSK-001               # remove the task line entirely
 todo complete --park TSK-001                # done + print the companion note path
@@ -100,7 +107,9 @@ Task references accept `TSK-001`, `tsk-001`, `001`, `1`, or `#1`.
 
 State rules:
 
-- `pickup` only works on an open `[ ]` task.
+- `pickup` only works on an open `[ ]` task, and prints the claimed line alone: the companion note comes from `todo detail`, so the claim verb never hands back a bare path that invites browsing its directory.
+- `handoff` only works on an in-progress `[o]` task (you can only hand off work you hold). It writes the task's handoff section and never touches the todo file, so it does not move `last_updated`.
+- `resume` accepts `[o]` by design: with a ref it reads that task's handoff whatever its status, and bare it lists every in-progress task carrying one, newest first.
 - `complete` only works on an in-progress `[o]` task (i.e. one you picked up).
 - `release` also only works on an in-progress `[o]` task; it returns it to `[ ]` and drops the claim.
 - `remove` works on any status line (including `[x]` done lines) and deletes it; `--note` also deletes the companion note file. When that note is a symlink, the target it points at is deleted first and the link after, so lnk-managed notes leave neither an orphaned target nor a dangling link.
@@ -167,6 +176,43 @@ Summaries must fit on a single line: embedded newlines are rejected. The same ho
 
 `todo detail --json` exposes the derived `disposition` field: `park` (has `category`), `record` (has `kind: record`), `work-order` (has `kind: work-order`), `clear` (no note), or `float` (note exists, none of the markers). `todo detail` itself reports an unreadable note as an error rather than a disposition.
 
+## Handoff
+
+A task's lifecycle has a beginning (`pickup`) and an end (`complete`), and nothing for the middle. A session that pauses mid-task had no word for it, so the pause was hand-written - a free-standing `.todo/` doc, or a section appended to the note, one per pass.
+
+`todo handoff <ref>` gives that pause a canonical shape. It writes a **replaceable** section onto the task's companion note:
+
+```
+## Handoff (2026-08-10)
+
+## State
+
+parser half done; the serializer still writes the old header
+
+### Verify
+
+make test
+
+<!-- /handoff -->
+```
+
+- The section always sits directly below the note's frontmatter, so a resuming reader meets it first.
+- A second handoff **replaces** the first. The note keeps exactly one handoff however many times its work is passed on, and its other sections survive untouched.
+- The closing `<!-- /handoff -->` marker ends the section, because the body carries headings of its own (`## State`, `### Verify`). It renders as nothing. A section hand-written without the marker still reads back, and the next `handoff` rewrites it canonically.
+- `### Verify` is the convention for the commands that prove the work. `resume --json` reports them on their own in `verify`, so a caller can run them without parsing the prose.
+- A task with no companion note gets one, stamped as a todo-native record by the same path `add` uses, so a handoff never introduces a second writer of frontmatter.
+
+`todo resume [<ref>]` is the read side. With a ref it prints that task's handoff, verify commands included; bare it lists every in-progress task whose note carries one, newest first - the re-entry point `pickup` refuses, since pickup rejects a task that is already claimed.
+
+```sh
+todo resume TSK-004            # one task's handoff
+todo resume                    # every in-flight task carrying a handoff
+todo resume --all              # ...across all registered repos
+todo resume TSK-004 --json     # machine-readable
+```
+
+An unreadable note is an error, never a silent "no handoff", so a handoff cannot be lost to a permissions problem.
+
 ## Archive
 
 `.todo/archive/` is the repo-local home for retired whys: the reasoning behind work that is done, kept where the work happened so a "how did we fix this before" search lands in the right repo. Retire a completed task with `todo archive <ref>`:
@@ -196,6 +242,10 @@ Both `todo list --json` and `todo detail --json` emit stable, machine-readable J
 `todo detail --json --full` adds the complete note text in `note_body` and omits `note_preview` and `note_preview_truncated`. `--lines` is ignored when `--full` is set.
 
 `claimed`, `age_days`, `note_preview`, `note_preview_truncated`, and `note_body` are omitted when empty or not applicable.
+
+`todo resume <ref> --json` returns a single object with fields: `id`, `status`, `status_symbol`, `priority`, `opened`, `claimed`, `age_days`, `summary`, `handoff_date`, `note_path`, `handoff`, and `verify` (omitted when the section carries no `### Verify`). Bare `todo resume --json` returns `{schema_version, handoffs[]}` with the same fields per entry plus `repo_project` under `--all`.
+
+`todo handoff --json` returns a single object reporting the write: `id`, `note_path`, `handoff_date`, `replaced`, and `note_created`.
 
 ## Development
 

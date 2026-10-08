@@ -787,6 +787,191 @@ func TestAddNoteOwnsItsFrontmatter(t *testing.T) {
 	}
 }
 
+func TestPickupOmitsNoteCoordinate(t *testing.T) {
+	setupGitRepo(t)
+
+	if _, _, err := runApp(t, []string{"init"}); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	if _, _, err := runApp(t, []string{"add", "-s", "with a note", "-n", "--note-content", "body"}); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+
+	out, _, err := runApp(t, []string{"pickup", "TSK-001"})
+	if err != nil {
+		t.Fatalf("pickup: %v", err)
+	}
+	if !strings.Contains(out, "- [o] [TSK-001]") {
+		t.Errorf("pickup output = %q, want the claimed line", out)
+	}
+	if strings.Contains(out, "note:") || strings.Contains(out, ".todo/notes") {
+		t.Errorf("pickup output = %q, want no note coordinate; the note comes from detail", out)
+	}
+
+	out, _, err = runApp(t, []string{"detail", "TSK-001", "--json"})
+	if err != nil {
+		t.Fatalf("detail --json: %v", err)
+	}
+	if !strings.Contains(out, `"note_path"`) || !strings.Contains(out, "TSK-001.md") {
+		t.Errorf("detail --json = %q, want the note path", out)
+	}
+}
+
+func TestHandoffAndResumeCLI(t *testing.T) {
+	setupGitRepo(t)
+
+	if _, _, err := runApp(t, []string{"init"}); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	if _, _, err := runApp(t, []string{"add", "-p", "high", "-s", "resume the work", "-n", "--note-content", "brief"}); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+
+	// Only the holder can hand off, so an open task is refused.
+	if _, _, err := runApp(t, []string{"handoff", "TSK-001", "--note-content", "state"}); err == nil {
+		t.Fatal("handoff on an open task: expected a guard error")
+	}
+	if _, _, err := runApp(t, []string{"pickup", "TSK-001"}); err != nil {
+		t.Fatalf("pickup: %v", err)
+	}
+
+	body := "## State\n\nhalf way\n\n### Verify\n\nmake test"
+	out, _, err := runApp(t, []string{"handoff", "TSK-001", "--note-content", body})
+	if err != nil {
+		t.Fatalf("handoff: %v", err)
+	}
+	if !strings.Contains(out, "TSK-001.md: handoff written (") {
+		t.Errorf("handoff output = %q, want the note path and the write", out)
+	}
+
+	note, err := os.ReadFile(filepath.Join(".todo", "notes", "TSK-001.md"))
+	if err != nil {
+		t.Fatalf("read note: %v", err)
+	}
+	if !strings.Contains(string(note), "## Handoff (") || !strings.Contains(string(note), "half way") {
+		t.Errorf("note = %q, want the handoff section", string(note))
+	}
+	if !strings.Contains(string(note), "## Handoff (") || strings.Count(string(note), "kind: record") != 1 {
+		t.Errorf("note = %q, want exactly one frontmatter block", string(note))
+	}
+
+	// resume <ref> hands the section back, verify commands included.
+	out, _, err = runApp(t, []string{"resume", "TSK-001"})
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	for _, want := range []string{"TSK-001 (priority: high)", "## Handoff (", "half way", "make test"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("resume output = %q, want %q", out, want)
+		}
+	}
+
+	out, _, err = runApp(t, []string{"resume", "TSK-001", "--json"})
+	if err != nil {
+		t.Fatalf("resume --json: %v", err)
+	}
+	if !strings.Contains(out, `"id": "TSK-001"`) || !strings.Contains(out, `"verify": "make test"`) {
+		t.Errorf("resume --json = %q, want the handoff and its verify commands", out)
+	}
+
+	// The bare form is the repo-wide re-entry view.
+	out, _, err = runApp(t, []string{"resume"})
+	if err != nil {
+		t.Fatalf("resume (bare): %v", err)
+	}
+	if !strings.Contains(out, "TSK-001") || !strings.Contains(out, "resume the work") {
+		t.Errorf("resume output = %q, want the in-flight task listed", out)
+	}
+
+	out, _, err = runApp(t, []string{"resume", "--json"})
+	if err != nil {
+		t.Fatalf("resume --json (bare): %v", err)
+	}
+	if !strings.Contains(out, `"schema_version": 1`) || !strings.Contains(out, `"handoffs"`) {
+		t.Errorf("resume --json = %q, want the versioned envelope", out)
+	}
+
+	// A handoff --json reports the write without the note text.
+	out, _, err = runApp(t, []string{"handoff", "TSK-001", "--note-content", "again", "--json"})
+	if err != nil {
+		t.Fatalf("handoff --json: %v", err)
+	}
+	if !strings.Contains(out, `"replaced": true`) || !strings.Contains(out, "TSK-001.md") {
+		t.Errorf("handoff --json = %q, want the replacement reported", out)
+	}
+
+	// Replacing keeps one section.
+	note, err = os.ReadFile(filepath.Join(".todo", "notes", "TSK-001.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(string(note), "## Handoff"); n != 1 {
+		t.Errorf("note = %q, want one handoff section, got %d", string(note), n)
+	}
+	if strings.Contains(string(note), "half way") {
+		t.Errorf("note = %q, want the first handoff replaced", string(note))
+	}
+
+	// Guards.
+	if _, _, err := runApp(t, []string{"handoff", "TSK-001", "--note-content", "x", "--note-file", "y"}); err == nil {
+		t.Error("handoff with both sources: expected a mutual-exclusion error")
+	}
+	if _, _, err := runApp(t, []string{"handoff", "TSK-001"}); err == nil {
+		t.Error("handoff with no text: expected an error")
+	}
+	if _, _, err := runApp(t, []string{"resume", "TSK-001", "--all"}); err == nil {
+		t.Error("resume --all with a ref: expected an error")
+	}
+	if _, _, err := runApp(t, []string{"resume", "TSK-099"}); err == nil {
+		t.Error("resume of an unknown ref: expected an error")
+	}
+
+	// An in-flight task with no handoff yet is a clear miss, not a silent empty.
+	if _, _, err := runApp(t, []string{"add", "-s", "no handoff yet"}); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	if _, _, err := runApp(t, []string{"pickup", "TSK-002"}); err != nil {
+		t.Fatalf("pickup TSK-002: %v", err)
+	}
+	_, _, err = runApp(t, []string{"resume", "TSK-002"})
+	if err == nil {
+		t.Fatal("resume of a task with no handoff: expected an error")
+	}
+	if !strings.Contains(err.Error(), "no handoff recorded for TSK-002") {
+		t.Errorf("error = %q, want the missing handoff named", err.Error())
+	}
+}
+
+func TestHandoffCreatesNoteForNotelessTask(t *testing.T) {
+	setupGitRepo(t)
+
+	if _, _, err := runApp(t, []string{"init"}); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	if _, _, err := runApp(t, []string{"add", "-s", "no note at all"}); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	if _, _, err := runApp(t, []string{"pickup", "TSK-001"}); err != nil {
+		t.Fatalf("pickup: %v", err)
+	}
+
+	out, _, err := runApp(t, []string{"handoff", "TSK-001", "--note-content", "state"})
+	if err != nil {
+		t.Fatalf("handoff: %v", err)
+	}
+	if !strings.Contains(out, "handoff written (new note)") {
+		t.Errorf("handoff output = %q, want the new note reported", out)
+	}
+
+	out, _, err = runApp(t, []string{"detail", "TSK-001", "--json"})
+	if err != nil {
+		t.Fatalf("detail --json: %v", err)
+	}
+	if !strings.Contains(out, `"disposition": "record"`) || !strings.Contains(out, `"note_exists": true`) {
+		t.Errorf("detail --json = %q, want a record note on disk", out)
+	}
+}
+
 func TestInitRegistersRepo(t *testing.T) {
 	dir := setupGitRepo(t)
 	dir, _ = filepath.EvalSymlinks(dir)
