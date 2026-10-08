@@ -567,9 +567,11 @@ func newApp() *cli.Command {
 			}(),
 			func() *cli.Command {
 				var (
-					all   bool
-					fix   bool
-					depth int
+					all      bool
+					fix      bool
+					adoption bool
+					asJSON   bool
+					depth    int
 				)
 				return &cli.Command{
 					Name:      "doctor",
@@ -586,6 +588,16 @@ func newApp() *cli.Command {
 							Destination: &fix,
 							Usage:       "drop stale entries and register unregistered folders",
 						},
+						&cli.BoolFlag{
+							Name:        "adoption",
+							Destination: &adoption,
+							Usage:       "also report repos whose .todo tree is a real file rather than a symlink into a host-side store",
+						},
+						&cli.BoolFlag{
+							Name:        "json",
+							Destination: &asJSON,
+							Usage:       "output machine-readable JSON",
+						},
 						&cli.IntFlag{
 							Name:        "depth",
 							Value:       4,
@@ -598,13 +610,15 @@ func newApp() *cli.Command {
 						paths := cmd.Args().Slice()
 						if len(paths) > 0 {
 							return runDoctor(cmd, doctorOptions{
-								all:   all,
-								fix:   fix,
-								depth: depth,
-								roots: paths,
+								all:      all,
+								fix:      fix,
+								adoption: adoption,
+								asJSON:   asJSON,
+								depth:    depth,
+								roots:    paths,
 							})
 						}
-						return runDoctor(cmd, doctorOptions{all: all, fix: fix, depth: depth})
+						return runDoctor(cmd, doctorOptions{all: all, fix: fix, adoption: adoption, asJSON: asJSON, depth: depth})
 					},
 				}
 			}(),

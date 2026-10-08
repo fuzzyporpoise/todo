@@ -115,15 +115,10 @@ func DropMissing(entries []Entry) (kept, stale []Entry, err error) {
 	return kept, stale, nil
 }
 
-// FindUnregistered walks roots up to maxDepth and returns the absolute,
-// cleaned repo paths that contain .todo/todo.md but are not already in entries.
-// A maxDepth <= 0 means no limit.
-func FindUnregistered(roots []string, maxDepth int, entries []Entry) ([]string, error) {
-	known := make(map[string]struct{}, len(entries))
-	for _, e := range entries {
-		known[filepath.Clean(e.Path)] = struct{}{}
-	}
-
+// FindTodoRepos walks roots up to maxDepth and returns the absolute, cleaned
+// paths of every repo root holding a .todo/todo.md, whether or not it is
+// already registered. A maxDepth <= 0 means no limit.
+func FindTodoRepos(roots []string, maxDepth int) ([]string, error) {
 	seen := make(map[string]struct{})
 	var found []string
 
@@ -166,9 +161,6 @@ func FindUnregistered(roots []string, maxDepth int, entries []Entry) ([]string, 
 			}
 
 			clean := filepath.Clean(p)
-			if _, ok := known[clean]; ok {
-				return nil
-			}
 			if _, ok := seen[clean]; !ok {
 				seen[clean] = struct{}{}
 				found = append(found, clean)
@@ -180,6 +172,62 @@ func FindUnregistered(roots []string, maxDepth int, entries []Entry) ([]string, 
 	}
 
 	sort.Strings(found)
+	return found, nil
+}
+
+// Unregistered returns the repo roots that are absent from entries.
+func Unregistered(repos []string, entries []Entry) []string {
+	known := make(map[string]struct{}, len(entries))
+	for _, e := range entries {
+		known[filepath.Clean(e.Path)] = struct{}{}
+	}
+
+	var found []string
+	for _, p := range repos {
+		p = filepath.Clean(p)
+		if _, ok := known[p]; !ok {
+			found = append(found, p)
+		}
+	}
+	return found
+}
+
+// EnclosingRepo returns the nearest ancestor of dir - dir itself included -
+// whose .todo/todo.md exists, so a command run from a subdirectory still names
+// the repo it belongs to.
+func EnclosingRepo(dir string) (string, bool) {
+	dir = filepath.Clean(dir)
+	for {
+		if hasTodoFile(dir) {
+			return dir, true
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", false
+		}
+		dir = parent
+	}
+}
+
+// Unadopted returns the repos whose .todo/todo.md is a real file rather than a
+// symlink into a host-side store. Such a tree sits outside every backup, which
+// is what makes it worth reporting. A todo.md that cannot be inspected is an
+// error rather than an unadopted repo.
+func Unadopted(repos []string) ([]string, error) {
+	var found []string
+	for _, repo := range repos {
+		todoFile := filepath.Join(repo, ".todo", "todo.md")
+		fi, err := os.Lstat(todoFile)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return nil, fmt.Errorf("stat %s: %w", todoFile, err)
+		}
+		if fi.Mode()&os.ModeSymlink == 0 {
+			found = append(found, filepath.Clean(repo))
+		}
+	}
 	return found, nil
 }
 

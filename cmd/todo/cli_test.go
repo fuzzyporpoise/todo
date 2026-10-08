@@ -1189,7 +1189,7 @@ func TestDoctorReportsAndFixes(t *testing.T) {
 		t.Fatalf("seed registry: %v", err)
 	}
 
-	out, _, err := runApp(t, []string{"doctor", "--all", "--depth", "2"})
+	out, _, err := runApp(t, []string{"doctor", "--all", "--adoption", "--depth", "2"})
 	if err != nil {
 		t.Fatalf("doctor: %v", err)
 	}
@@ -1198,6 +1198,15 @@ func TestDoctorReportsAndFixes(t *testing.T) {
 	}
 	if !strings.Contains(out, "unregistered\t"+nested) {
 		t.Errorf("doctor output missing unregistered entry: %q", out)
+	}
+	// Both repos hold a real todo.md, so both trees are outside every backup.
+	for _, want := range []string{repoA, nested} {
+		if !strings.Contains(out, "unadopted\t"+want) {
+			t.Errorf("doctor output missing unadopted repo %s: %q", want, out)
+		}
+	}
+	if !strings.Contains(out, "lnk project init") {
+		t.Errorf("doctor output missing the corrective step: %q", out)
 	}
 
 	_, _, err = runApp(t, []string{"doctor", "--all", "--fix", "--depth", "2"})
@@ -1218,6 +1227,114 @@ func TestDoctorReportsAndFixes(t *testing.T) {
 	}
 	if !paths[repoA] || !paths[nested] || paths[missing] {
 		t.Errorf("fixed paths = %v", paths)
+	}
+}
+
+func TestDoctorFlagsUnadoptedRepo(t *testing.T) {
+	repo := setupGitRepo(t)
+	if _, _, err := runApp(t, []string{"init"}); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	// doctor reports the canonical path, as the registry stores it.
+	wantRepo, err := filepath.EvalSymlinks(cwd)
+	if err != nil {
+		t.Fatalf("resolve repo: %v", err)
+	}
+
+	// init writes a real todo.md, but adoption is a host-side convention: the
+	// default doctor run says nothing about it.
+	out, _, err := runApp(t, []string{"doctor"})
+	if err != nil {
+		t.Fatalf("doctor: %v", err)
+	}
+	if strings.Contains(out, "unadopted\t") {
+		t.Errorf("default doctor run reported adoption: %q", out)
+	}
+	if !strings.Contains(out, "summary: 1 ok, 0 stale, 0 unregistered\n") {
+		t.Errorf("default doctor summary = %q, want the registry-only counts", out)
+	}
+
+	out, _, err = runApp(t, []string{"doctor", "--json"})
+	if err != nil {
+		t.Fatalf("doctor --json: %v", err)
+	}
+	if strings.Contains(out, `"adopted"`) {
+		t.Errorf("default doctor --json reported adoption: %q", out)
+	}
+
+	// --adoption is the opt-in check.
+	out, _, err = runApp(t, []string{"doctor", "--adoption"})
+	if err != nil {
+		t.Fatalf("doctor --adoption: %v", err)
+	}
+	if !strings.Contains(out, "unadopted\t"+wantRepo) {
+		t.Errorf("doctor output missing unadopted repo: %q", out)
+	}
+	if !strings.Contains(out, "lnk project init") {
+		t.Errorf("doctor output missing the corrective step: %q", out)
+	}
+	// The repo init registered is the repo doctor scans, not an unregistered
+	// twin reached through a symlinked path.
+	if strings.Contains(out, "unregistered\t") {
+		t.Errorf("doctor reported the current repo as unregistered: %q", out)
+	}
+
+	out, _, err = runApp(t, []string{"doctor", "--adoption", "--json"})
+	if err != nil {
+		t.Fatalf("doctor --adoption --json: %v", err)
+	}
+	var got struct {
+		SchemaVersion int `json:"schema_version"`
+		Repos         []struct {
+			Path       string `json:"path"`
+			Registered bool   `json:"registered"`
+			Adopted    *bool  `json:"adopted"`
+			Action     string `json:"action"`
+		} `json:"repos"`
+		Summary struct {
+			Unadopted *int `json:"unadopted"`
+		} `json:"summary"`
+	}
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("decode doctor --json: %v\n%s", err, out)
+	}
+	if len(got.Repos) != 1 || got.Repos[0].Path != wantRepo {
+		t.Fatalf("doctor --json repos = %+v, want the current repo", got.Repos)
+	}
+	if !got.Repos[0].Registered {
+		t.Error("doctor --json reported the registered repo as unregistered")
+	}
+	if got.Repos[0].Adopted == nil || *got.Repos[0].Adopted {
+		t.Errorf("doctor --json adopted = %v, want false", got.Repos[0].Adopted)
+	}
+	if got.Repos[0].Action == "" || got.Summary.Unadopted == nil || *got.Summary.Unadopted != 1 {
+		t.Errorf("doctor --json = %+v, want the corrective action and one unadopted repo", got)
+	}
+
+	// Adopt the tree: the store owns todo.md, the repo holds a link to it. The
+	// check must go quiet on an adopted repo.
+	store := filepath.Join(t.TempDir(), "todo.md")
+	if err := os.Rename(filepath.Join(repo, ".todo", "todo.md"), store); err != nil {
+		t.Fatalf("move todo.md into the store: %v", err)
+	}
+	if err := os.Symlink(store, filepath.Join(repo, ".todo", "todo.md")); err != nil {
+		t.Fatalf("symlink todo.md: %v", err)
+	}
+
+	out, _, err = runApp(t, []string{"doctor", "--adoption"})
+	if err != nil {
+		t.Fatalf("doctor --adoption adopted: %v", err)
+	}
+	if strings.Contains(out, "unadopted\t") {
+		t.Errorf("adopted repo reported as unadopted: %q", out)
+	}
+	// A checked zero is reported, so the caller can tell it from "not checked".
+	if !strings.Contains(out, "0 unadopted") {
+		t.Errorf("doctor summary missing zero unadopted: %q", out)
 	}
 }
 

@@ -70,8 +70,10 @@ todo list --all                             # list tasks across all registered r
 todo list --all --json                      # ...with repo_path/repo_project and disposition
 todo list --all --sort priority             # sort global results
 todo doctor                                 # report stale/unregistered registry entries
+todo doctor --adoption                      # also flag repos whose .todo tree is a real file, not a store symlink
 todo doctor --all                           # scan every registered repo directory downward
 todo doctor --fix                           # drop stale entries and register missing repos
+todo doctor --json                          # machine-readable findings
 todo doctor --depth 3 /code                 # scan /code downward up to depth 3 for unregistered .todo folders
 todo detail TSK-001                         # show task details + 20-line note preview
 todo detail --lines 5 TSK-001               # preview first 5 lines of the note
@@ -143,6 +145,14 @@ Status is `[ ]` open, `[o]` in progress, `[x]` done. `claimed:` records when a t
 ## Registry
 
 Every `todo init` registers the repo in a machine-local JSON cache at `$XDG_CACHE_HOME/todo/registry.json` (falling back to `~/.cache/todo/registry.json`). The registry stores the absolute repo path, project name, git remote URL, parsed host/owner, and a `last_seen` timestamp. `todo list --all` and `todo doctor` use this cache to operate across tracked folders without `cd`ing.
+
+### Adoption
+
+Where an out-of-band store is the versioned home, a repo's `.todo/` is **adopted** when `.todo/todo.md` is a symlink into that store. An unadopted repo is then a silent hazard: a real `todo.md` lives only in the working copy, outside every backup, while the board renders its tasks anyway.
+
+That is a host-side convention, not a todo requirement. A plain repo with a real `.todo/todo.md` is a perfectly good todo repo, and every `todo init` starts out that way, so the check is opt-in: `todo doctor --adoption` reports each unadopted repo and names the corrective step, the host-side `lnk project init`. Without the flag, doctor reports the registry and says nothing about stores.
+
+`--adoption --all` covers every registered repo; with neither `--all` nor positional paths the scan root is the repo the command runs in (from its root, so a subdirectory invocation still flags its own tree), and scan roots are canonicalized so a repo reached through a symlinked path is not mistaken for an unregistered twin. `--fix` reconciles the registry only: adoption is host-side, so doctor never fakes it.
 
 ## Note disposition
 
@@ -246,6 +256,8 @@ Both `todo list --json` and `todo detail --json` emit stable, machine-readable J
 `todo resume <ref> --json` returns a single object with fields: `id`, `status`, `status_symbol`, `priority`, `opened`, `claimed`, `age_days`, `summary`, `handoff_date`, `note_path`, `handoff`, and `verify` (omitted when the section carries no `### Verify`). Bare `todo resume --json` returns `{schema_version, handoffs[]}` with the same fields per entry plus `repo_project` under `--all`.
 
 `todo handoff --json` returns a single object reporting the write: `id`, `note_path`, `handoff_date`, `replaced`, and `note_created`.
+
+`todo doctor --json` returns `{schema_version, repos[], stale[], summary}`. Each examined repo carries `path` and `registered` (the registry tracks it); under `--adoption` it also carries `adopted` (its `todo.md` is a store symlink, so the tree is backed up) and `action` when unadopted, both omitted when the check did not run, so an absent flag never reads as "checked and fine". `stale[]` lists registry entries whose folder is gone, as `path` plus `project`. `summary` repeats the human counts (`ok`, `stale`, `unregistered`, plus `unadopted` under `--adoption`). The findings are the pre-fix state; with `--fix` the envelope adds `reconciled` (`kept`, `dropped`, `added`) to report what that run changed.
 
 ## Development
 

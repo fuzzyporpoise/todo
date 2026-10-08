@@ -1010,12 +1010,50 @@ func runClear(cmd *cli.Command, cfg appConfig, opts clearOptions) error {
 
 // doctorOptions carries the flag values for the doctor command.
 type doctorOptions struct {
-	all   bool
-	fix   bool
-	depth int
-	roots []string
+	all      bool
+	fix      bool
+	adoption bool
+	asJSON   bool
+	depth    int
+	roots    []string
 }
 
+// adoptAction is the host-side step that brings an unadopted .todo tree under
+// backup. todo reports it but never runs it: the store belongs to lnk.
+const adoptAction = "run `lnk project init` in the repo"
+
+// doctorRepo is one repo root doctor examined, tagged with the two per-repo
+// facts it reports: whether the registry tracks it, and (only under --adoption)
+// whether its .todo tree is adopted by a host-side store.
+type doctorRepo struct {
+	Path       string
+	Registered bool
+	Adopted    bool
+}
+
+// doctorFindings is everything one doctor run found, gathered once so the
+// human and JSON forms report the same set.
+type doctorFindings struct {
+	Repos        []doctorRepo     // every repo root examined
+	Registered   []registry.Entry // registry entries whose folder is reachable
+	Stale        []registry.Entry // entries whose folder is gone
+	Unregistered []string         // repo roots absent from the registry
+	Checked      bool             // the adoption check ran (--adoption)
+	Unadopted    []string         // repo roots whose .todo tree is a real file
+	Reconciled   *doctorFixed     // set when --fix ran
+}
+
+// doctorFixed counts what --fix changed.
+type doctorFixed struct {
+	Kept    int
+	Dropped int
+	Added   int
+}
+
+// runDoctor reconciles the registry against disk and, under --adoption,
+// reports .todo trees that sit outside every backup. Adoption is a host-side
+// convention, not a todo requirement - a plain repo is a perfectly good todo
+// repo - so it is opt-in and --fix never touches it.
 func runDoctor(cmd *cli.Command, opts doctorOptions) error {
 	entries, err := registry.Load(registryPath())
 	if err != nil {
@@ -1036,25 +1074,34 @@ func runDoctor(cmd *cli.Command, opts doctorOptions) error {
 				roots = append(roots, e.Path)
 			}
 		} else {
-			cwd, err := os.Getwd()
+			root, err := localRepoRoot()
 			if err != nil {
 				return exitError(err)
 			}
-			roots = []string{cwd}
+			roots = []string{root}
 		}
 	}
 
-	unregistered, err := registry.FindUnregistered(roots, opts.depth, kept)
+	repos, err := registry.FindTodoRepos(resolveRoots(roots), opts.depth)
 	if err != nil {
 		return exitError(err)
 	}
-
-	out := outWriter(cmd)
-	for _, e := range stale {
-		_, _ = fmt.Fprintf(out, "stale\t%s\n", e.Path)
+	unregistered := registry.Unregistered(repos, kept)
+	var unadopted []string
+	if opts.adoption {
+		unadopted, err = registry.Unadopted(repos)
+		if err != nil {
+			return exitError(err)
+		}
 	}
-	for _, p := range unregistered {
-		_, _ = fmt.Fprintf(out, "unregistered\t%s\n", p)
+
+	findings := doctorFindings{
+		Repos:        describeRepos(repos, kept, unadopted),
+		Registered:   kept,
+		Stale:        stale,
+		Unregistered: unregistered,
+		Checked:      opts.adoption,
+		Unadopted:    unadopted,
 	}
 
 	if opts.fix {
@@ -1064,12 +1111,189 @@ func runDoctor(cmd *cli.Command, opts doctorOptions) error {
 		if err := registry.Save(registryPath(), kept); err != nil {
 			return exitError(err)
 		}
-		_, _ = fmt.Fprintf(out, "reconciled: %d kept, %d dropped, %d added\n", len(kept), len(stale), len(unregistered))
-	} else {
-		_, _ = fmt.Fprintf(out, "summary: %d ok, %d stale, %d unregistered\n", len(kept), len(stale), len(unregistered))
+		findings.Reconciled = &doctorFixed{Kept: len(kept), Dropped: len(stale), Added: len(unregistered)}
 	}
 
+	out := outWriter(cmd)
+	if opts.asJSON {
+		return writeJSONDoctor(out, findings)
+	}
+	writeDoctorText(out, findings)
 	return nil
+}
+
+// resolveRoots canonicalizes scan roots, so a repo reached through a symlinked
+// path (on macOS, /var for /private/var) still matches its registry entry
+// instead of reading as unregistered - and so --fix never registers a second
+// entry for a repo already tracked under its resolved path.
+func resolveRoots(roots []string) []string {
+	resolved := make([]string, 0, len(roots))
+	for _, root := range roots {
+		if target, err := filepath.EvalSymlinks(root); err == nil {
+			root = target
+		}
+		resolved = append(resolved, root)
+	}
+	return resolved
+}
+
+// localRepoRoot returns the repo root doctor scans when no roots were given:
+// the repo the command runs in, so a subdirectory invocation still scans - and
+// flags - its own tree. Outside a todo repo the current directory is the root.
+func localRepoRoot() (string, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	if repo, ok := registry.EnclosingRepo(cwd); ok {
+		return repo, nil
+	}
+	return cwd, nil
+}
+
+// describeRepos tags each examined repo root with its registry and adoption
+// state. unadopted is empty unless the adoption check ran, which leaves every
+// repo reported as adopted - the field is only serialized under --adoption.
+func describeRepos(repos []string, kept []registry.Entry, unadopted []string) []doctorRepo {
+	registered := make(map[string]bool, len(kept))
+	for _, e := range kept {
+		registered[filepath.Clean(e.Path)] = true
+	}
+	unbacked := make(map[string]bool, len(unadopted))
+	for _, p := range unadopted {
+		unbacked[p] = true
+	}
+
+	described := make([]doctorRepo, 0, len(repos))
+	for _, p := range repos {
+		described = append(described, doctorRepo{
+			Path:       p,
+			Registered: registered[p],
+			Adopted:    !unbacked[p],
+		})
+	}
+	return described
+}
+
+// writeDoctorText renders findings as doctor's tab-separated line form. Under
+// --adoption an unadopted line names the corrective step.
+func writeDoctorText(out io.Writer, f doctorFindings) {
+	for _, e := range f.Stale {
+		_, _ = fmt.Fprintf(out, "stale\t%s\n", e.Path)
+	}
+	for _, p := range f.Unregistered {
+		_, _ = fmt.Fprintf(out, "unregistered\t%s\n", p)
+	}
+	for _, p := range f.Unadopted {
+		_, _ = fmt.Fprintf(out, "unadopted\t%s\t%s\n", p, adoptAction)
+	}
+
+	if f.Reconciled != nil {
+		_, _ = fmt.Fprintf(out, "reconciled: %d kept, %d dropped, %d added\n",
+			f.Reconciled.Kept, f.Reconciled.Dropped, f.Reconciled.Added)
+		return
+	}
+	if f.Checked {
+		_, _ = fmt.Fprintf(out, "summary: %d ok, %d stale, %d unregistered, %d unadopted\n",
+			len(f.Registered), len(f.Stale), len(f.Unregistered), len(f.Unadopted))
+		return
+	}
+	_, _ = fmt.Fprintf(out, "summary: %d ok, %d stale, %d unregistered\n",
+		len(f.Registered), len(f.Stale), len(f.Unregistered))
+}
+
+// jsonDoctorRepo is one examined repo root: registered means the registry
+// tracks it. Under --adoption it also carries adopted (the todo.md is a store
+// symlink rather than a real file) and, when unadopted, the corrective step.
+// Both are omitted when the check did not run, so an absent flag never reads as
+// "checked and fine".
+type jsonDoctorRepo struct {
+	Path       string `json:"path"`
+	Registered bool   `json:"registered"`
+	Adopted    *bool  `json:"adopted,omitempty"`
+	Action     string `json:"action,omitempty"`
+}
+
+// jsonDoctorStale is a registry entry whose folder no longer exists.
+type jsonDoctorStale struct {
+	Path    string `json:"path"`
+	Project string `json:"project,omitempty"`
+}
+
+// jsonDoctorSummary mirrors the counts on doctor's human summary line.
+// Unadopted is present only under --adoption, where a checked zero is real
+// information.
+type jsonDoctorSummary struct {
+	OK           int  `json:"ok"`
+	Stale        int  `json:"stale"`
+	Unregistered int  `json:"unregistered"`
+	Unadopted    *int `json:"unadopted,omitempty"`
+}
+
+// jsonDoctorReconciled reports what --fix changed.
+type jsonDoctorReconciled struct {
+	Kept    int `json:"kept"`
+	Dropped int `json:"dropped"`
+	Added   int `json:"added"`
+}
+
+// jsonDoctorEnvelope wraps doctor's findings in a versioned contract.
+type jsonDoctorEnvelope struct {
+	SchemaVersion int                   `json:"schema_version"`
+	Repos         []jsonDoctorRepo      `json:"repos"`
+	Stale         []jsonDoctorStale     `json:"stale"`
+	Summary       jsonDoctorSummary     `json:"summary"`
+	Reconciled    *jsonDoctorReconciled `json:"reconciled,omitempty"`
+}
+
+// writeJSONDoctor emits findings for machine consumers. Under --adoption those
+// findings include the per-repo adopted flag, so a caller that manages a store
+// can tell a backed-up tree from an unbacked one; without it, doctor reports
+// only what it checked.
+func writeJSONDoctor(out io.Writer, f doctorFindings) error {
+	repos := make([]jsonDoctorRepo, 0, len(f.Repos))
+	for _, r := range f.Repos {
+		jr := jsonDoctorRepo{Path: r.Path, Registered: r.Registered}
+		if f.Checked {
+			adopted := r.Adopted
+			jr.Adopted = &adopted
+			if !adopted {
+				jr.Action = adoptAction
+			}
+		}
+		repos = append(repos, jr)
+	}
+
+	stale := make([]jsonDoctorStale, 0, len(f.Stale))
+	for _, e := range f.Stale {
+		stale = append(stale, jsonDoctorStale{Path: e.Path, Project: e.Project})
+	}
+
+	envelope := jsonDoctorEnvelope{
+		SchemaVersion: 1,
+		Repos:         repos,
+		Stale:         stale,
+		Summary: jsonDoctorSummary{
+			OK:           len(f.Registered),
+			Stale:        len(f.Stale),
+			Unregistered: len(f.Unregistered),
+		},
+	}
+	if f.Checked {
+		unadopted := len(f.Unadopted)
+		envelope.Summary.Unadopted = &unadopted
+	}
+	if f.Reconciled != nil {
+		envelope.Reconciled = &jsonDoctorReconciled{
+			Kept:    f.Reconciled.Kept,
+			Dropped: f.Reconciled.Dropped,
+			Added:   f.Reconciled.Added,
+		}
+	}
+
+	enc := json.NewEncoder(out)
+	enc.SetIndent("", "  ")
+	return enc.Encode(envelope)
 }
 
 // requireTaskRef validates and returns the first positional argument as a task
