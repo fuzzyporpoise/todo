@@ -66,12 +66,12 @@ func newApp() *cli.Command {
 				noteContentFlag := &cli.StringFlag{
 					Name:        "note-content",
 					Destination: &noteContent,
-					Usage:       "content to write into the note (implies --note); use '-' to read from stdin",
+					Usage:       "content to write into the note (implies --note); use '-' to read from stdin; a leading frontmatter block in the content is reconciled into todo's single block",
 				}
 				noteFileFlag := &cli.StringFlag{
 					Name:        "note-file",
 					Destination: &noteFile,
-					Usage:       "copy an existing file into the note (implies --note; copy, not move)",
+					Usage:       "copy an existing file into the note (implies --note; copy, not move; the source's own frontmatter is dropped, only its body crosses over)",
 				}
 				kindFlag := &cli.StringFlag{
 					Name:        "kind",

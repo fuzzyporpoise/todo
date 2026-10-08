@@ -717,6 +717,76 @@ func TestAddContentFlagsImplyNote(t *testing.T) {
 	}
 }
 
+func TestAddNoteOwnsItsFrontmatter(t *testing.T) {
+	setupGitRepo(t)
+
+	if _, _, err := runApp(t, []string{"init"}); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+
+	docBlocks := func(t *testing.T, name string) int {
+		t.Helper()
+		data, err := os.ReadFile(filepath.Join(".todo/notes", name))
+		if err != nil {
+			t.Fatalf("read note: %v", err)
+		}
+		count := 0
+		for line := range strings.SplitSeq(string(data), "\n") {
+			if strings.TrimSpace(line) == "---" {
+				count++
+			}
+		}
+		return count
+	}
+
+	// --note-file bridges a free-standing doc: its frontmatter is dropped.
+	src := filepath.Join(t.TempDir(), "plan.md")
+	doc := "---\ntitle: Phase 3\ncategory: areas\nsynopsis: doc synopsis\n---\n\nplan body\n"
+	if err := os.WriteFile(src, []byte(doc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := runApp(t, []string{"add", "-s", "from doc", "--note-file", src}); err != nil {
+		t.Fatalf("add --note-file: %v", err)
+	}
+	if n := docBlocks(t, "TSK-001.md"); n != 2 {
+		t.Errorf("note-file add frontmatter delimiters = %d, want 2", n)
+	}
+	data, err := os.ReadFile(".todo/notes/TSK-001.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "kind: record") || strings.Contains(string(data), "title: Phase 3") {
+		t.Errorf("note = %q, want todo's record block over the doc body", string(data))
+	}
+
+	// A supplied body declaring a park record keeps that disposition.
+	if _, _, err := runApp(t, []string{"add", "-s", "declared park", "--note-content", "---\ncategory: areas\n---\n\nprose"}); err != nil {
+		t.Fatalf("add --note-content with a declared park block: %v", err)
+	}
+	if n := docBlocks(t, "TSK-002.md"); n != 2 {
+		t.Errorf("declared-park add frontmatter delimiters = %d, want 2", n)
+	}
+	data, err = os.ReadFile(".todo/notes/TSK-002.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(data), "---\ncategory: areas\n") {
+		t.Errorf("note = %q, want the declared park block", string(data))
+	}
+
+	// A body contradicting the requested disposition is refused, not stacked.
+	_, _, err = runApp(t, []string{"add", "-s", "conflict", "--kind", "work-order", "--note-content", "---\nkind: record\n---\n\nprose"})
+	if err == nil {
+		t.Fatal("conflicting disposition: expected error")
+	}
+	if !strings.Contains(err.Error(), "declares a record disposition") {
+		t.Errorf("error = %q, want the conflict to be named", err.Error())
+	}
+	if _, err := os.Stat(".todo/notes/TSK-003.md"); !os.IsNotExist(err) {
+		t.Errorf("conflicting add wrote a note file: %v", err)
+	}
+}
+
 func TestInitRegistersRepo(t *testing.T) {
 	dir := setupGitRepo(t)
 	dir, _ = filepath.EvalSymlinks(dir)

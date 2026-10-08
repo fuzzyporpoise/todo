@@ -51,7 +51,7 @@ todo add -p high "urgent issue"             # add with priority (low|med|high)
 todo add -s "summaries also via flag"       # summary via flag
 todo add --note-content "body" "task"       # create a note with content (no -n needed)
 echo "body" | todo add -n "task"            # ...or read note content from stdin
-todo add --note-file ./draft.md "task"      # ...or copy an existing file (not move; no -n needed)
+todo add --note-file ./draft.md "task"      # ...or copy a file's body (its frontmatter is dropped; not moved; no -n needed)
 todo add --dry-run -s "x" --note-content "y" # preview the would-be line + note, no write
 todo add -n --kind work-order "task"        # note is a disposable work order
 todo add -n --synopsis "one line" "task"    # note is a todo-native record (default when -n is given)
@@ -142,6 +142,16 @@ Every companion note carries a write-time disposition in its frontmatter so clea
 - **record** (default): todo-native frontmatter with `kind: record`, `created`, `source`, and `synopsis`. Stamped whenever `-n` creates a note without a `--kind` or `--category` flag; `synopsis` defaults to the task summary and `source` to `repo`.
 - **work order**: `kind: work-order`, stamped by `--kind work-order`. Disposable.
 - **park**: park-native frontmatter with `category`, `created`, `source`, and `synopsis`, stamped by `--category` (interop with the park store). Recognized by the mere presence of `category:`.
+
+### Note creation owns the block
+
+`add` writes exactly one frontmatter block, whatever the body it was handed looks like:
+
+- A body from `--note-content` or stdin that already opens with a block has that block stripped and reconciled: its `synopsis`/`source` fill whichever fields the flags leave silent, and its disposition is adopted when no flag names one (so a body carrying `category: areas` becomes a park record).
+- A body declaring a disposition that the flags contradict is an error, never a second stacked block. `--note-content '---\nkind: record\n---' --kind work-order` refuses instead of writing both.
+- `--note-file` copies a free-standing doc, so the doc's frontmatter (title, status, and friends) describes the doc and is dropped; only the body crosses into the note.
+- Stacked blocks in one body collapse into a single block, which is how the older doubled notes (todo's `kind: record` stapled over an agent-authored `category:` block) heal when their text is fed back in.
+- `created` is always the write date, and a body that merely opens with a horizontal rule is treated as prose, never as frontmatter, so no supplied text is ever eaten.
 
 `todo clear` bulk-removes completed `[x]` tasks based on that disposition:
 
