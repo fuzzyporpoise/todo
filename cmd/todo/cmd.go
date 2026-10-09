@@ -120,12 +120,6 @@ func newApp() *cli.Command {
 							Destination: &create,
 							Usage:       "create a companion note file (optional when --note-content/--note-file given; otherwise reads content from stdin)",
 						},
-						noteContentFlag,
-						noteFileFlag,
-						kindFlag,
-						categoryFlag,
-						synopsisFlag,
-						sourceFlag,
 						&cli.BoolFlag{
 							Name:        "dry-run",
 							Destination: &dryRun,
@@ -292,8 +286,6 @@ func newApp() *cli.Command {
 					Usage:     "write a replaceable ## Handoff section onto an in-progress task's note",
 					ArgsUsage: "<task>",
 					Flags: []cli.Flag{
-						noteContentFlag,
-						noteFileFlag,
 						&cli.BoolFlag{
 							Name:        "json",
 							Destination: &asJSON,
