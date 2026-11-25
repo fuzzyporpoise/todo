@@ -1474,3 +1474,72 @@ func TestArchiveCommandRequiresSynopsis(t *testing.T) {
 		t.Errorf("archived note missing asserted synopsis:\n%s", string(data))
 	}
 }
+
+// setupWorktreeLayout builds a gwt/r2d-style clone root: a bare .bare repo, a
+// .git pointer file at the root aimed at it, and a main/ worktree. The root is
+// not a working tree, so per-repo commands fail there and work inside main/.
+func setupWorktreeLayout(t *testing.T) string {
+	t.Helper()
+	base := t.TempDir()
+	src := filepath.Join(base, "src")
+	gitRun(t, "", "init", "-q", src)
+	gitRun(t, src, "config", "user.email", "t@t")
+	gitRun(t, src, "config", "user.name", "t")
+	gitRun(t, src, "commit", "-q", "--allow-empty", "-m", "init")
+
+	proj := filepath.Join(base, "proj")
+	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatalf("mkdir proj: %v", err)
+	}
+	gitRun(t, "", "clone", "--bare", "-q", src, filepath.Join(proj, ".bare"))
+	if err := os.WriteFile(filepath.Join(proj, ".git"), []byte("gitdir: ./.bare\n"), 0o644); err != nil {
+		t.Fatalf("write .git pointer: %v", err)
+	}
+	gitRun(t, filepath.Join(proj, ".bare"), "worktree", "add", "-q", filepath.Join(proj, "main"))
+	return proj
+}
+
+func gitRun(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	if dir != "" {
+		args = append([]string{"-C", dir}, args...)
+	}
+	if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+		t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, out)
+	}
+}
+
+func TestListAtCloneRootNamesWorktree(t *testing.T) {
+	proj := setupWorktreeLayout(t)
+	t.Chdir(proj)
+	t.Setenv("TODO_REGISTRY", filepath.Join(proj, "registry.json"))
+
+	_, _, err := runApp(t, []string{"list"})
+	if err == nil {
+		t.Fatal("list at clone root: expected error")
+	}
+	msg := err.Error()
+	for _, want := range []string{"not a git working tree", "clone root", "main/"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("list error %q does not mention %q", msg, want)
+		}
+	}
+}
+
+func TestListInsideWorktreeUnchanged(t *testing.T) {
+	proj := setupWorktreeLayout(t)
+	main := filepath.Join(proj, "main")
+	t.Chdir(main)
+	t.Setenv("TODO_REGISTRY", filepath.Join(proj, "registry.json"))
+
+	if _, _, err := runApp(t, []string{"init"}); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	out, _, err := runApp(t, []string{"list", "--json"})
+	if err != nil {
+		t.Fatalf("list in worktree: %v", err)
+	}
+	if !strings.Contains(out, `"schema_version"`) {
+		t.Errorf("list in worktree = %q, want JSON output", out)
+	}
+}
