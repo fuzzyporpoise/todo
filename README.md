@@ -44,6 +44,8 @@ make build
 
 `todo` operates on the current git repo. Run `todo init` once to create the `.todo/todo.md` file, then manage tasks:
 
+In a worktree layout (for example gwt/r2d) the clone root is not a working tree: `.git` is a pointer file to a bare `.bare`, so `git rev-parse --show-toplevel` fails there. `todo` names that case instead of echoing the raw plumbing error and points you at a worktree (`main/`). It never guesses which worktree to use.
+
 ```sh
 todo init                                   # create .todo/todo.md if missing and register the repo
 todo add "fix the thing"                    # add a task (default priority: med)
